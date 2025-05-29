@@ -1,0 +1,12 @@
+pandas
+yfinance
+matplotlib
+scikit-learn
+selenium
+webdriver-manager
+fake-useragent
+wxPython
+openpyxl
+scipy
+retrying
+mplfinance 

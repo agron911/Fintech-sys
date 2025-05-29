@@ -1,0 +1,12 @@
+{
+  "data_dir": "investment_system/data",
+  "stk2_dir": "investment_system/data/raw",
+  "adjustments_dir": "investment_system/data/lists/adjustments",
+  "processed_dir": "investment_system/data/processed",
+  "start_date": "2002-01-01",
+  "end_date": "2025-05-20",
+  "international_file": "investment_system/data/lists/international.txt",
+  "list_file": "investment_system/data/lists/adjustments/list.xlsx",
+  "otclist_file": "investment_system/data/lists/adjustments/otclist.xlsx",
+  "databases_dir": "investment_system/data/raw/databases"
+} 

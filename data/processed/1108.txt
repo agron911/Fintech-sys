@@ -1,0 +1,3 @@
+Price	Close	High	Low	Open	Volume	Date
+Ticker	1108.TW	1108.TW	1108.TW	1108.TW	1108.TW	
+Date						
