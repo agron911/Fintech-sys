@@ -54,19 +54,19 @@ def delete_files():
 
 
 
-def save_stock_data(df, stock_code, folder= save_file_path, long_tail=False):
-    # Ensure columns are named correctly
-    df = df.rename(columns={
-        df.columns[0]: 'Price',
-        df.columns[1]: 'Close',
-        df.columns[2]: 'High',
-        df.columns[3]: 'Low',
-        df.columns[4]: 'Open',
-        df.columns[5]: 'Volume',
-        df.columns[6]: 'Date',
-    })
-    # Only keep the expected columns
-    df = df[['Price', 'Close', 'High', 'Low', 'Open', 'Volume', 'Date']]
+def save_stock_data(df, stock_code, folder=save_file_path, long_tail=False):
+    # Drop 'Adj Close' if present
+    if 'Adj Close' in df.columns:
+        df = df.drop(columns=['Adj Close'])
+    # Add 'Date' column if not present
+    if 'Date' not in df.columns:
+        df['Date'] = df.index
+    # Define the expected columns in the desired order
+    expected_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Date']
+    # Only keep columns that exist in df
+    cols_to_use = [col for col in expected_cols if col in df.columns]
+    df = df[cols_to_use]
+    # Save to file
     if long_tail:
         df.to_csv(folder / f"{stock_code}_long_tail.txt", sep="\t", index=False)
     else:
@@ -134,9 +134,9 @@ def crawl_otc_yf():
 
 # execute the delete and crawl crawl_all_ch which is not deprecated
 
-# delete_files()
-# crawl_all_ch()
-# crawl_otc_yf()
+delete_files()
+crawl_all_ch()
+crawl_otc_yf()
 
 class YahooFinanceCrawler(BaseCrawler):
     def __init__(self, config):
