@@ -1,0 +1,3 @@
+Price	Close	High	Low	Open	Volume	Date
+Ticker	3045.TW	3045.TW	3045.TW	3045.TW	3045.TW	
+Date						

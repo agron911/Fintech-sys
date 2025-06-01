@@ -8,8 +8,7 @@ def load_and_preprocess_data(file_path: str) -> pd.DataFrame:
     """
     Load raw tab-delimited data from file_path, parse dates, clean, validate OHLC, filter by recent years.
     """
-    df = pd.read_csv(file_path, sep='\t', skiprows=1,
-                     names=['Price', 'Close', 'High', 'Low', 'Open', 'Volume', 'Date'])
+    df = pd.read_csv(file_path, sep='\t')
     # Parse date and set index
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     df = df.dropna(subset=['Date']).set_index('Date')

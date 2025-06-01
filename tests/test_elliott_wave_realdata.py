@@ -4,8 +4,8 @@ from src.analysis.core.peaks import detect_peaks_troughs_enhanced
 import numpy as np
 
 def test_detect_pattern_on_real_data_windows():
-    # The file uses tab as delimiter and has a header row, skip the second row (Ticker)
-    df = pd.read_csv('tests/2015.txt', delimiter='\t', skiprows=[1])
+    # The file uses tab as delimiter and has a header row
+    df = pd.read_csv('tests/2015.txt', delimiter='\t')
     # Clean up column names and parse dates (convert to lowercase)
     df.columns = [col.strip().lower() for col in df.columns]
     if 'date' in df.columns:

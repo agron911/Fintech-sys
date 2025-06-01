@@ -55,10 +55,22 @@ def delete_files():
 
 
 def save_stock_data(df, stock_code, folder= save_file_path, long_tail=False):
+    # Ensure columns are named correctly
+    df = df.rename(columns={
+        df.columns[0]: 'Price',
+        df.columns[1]: 'Close',
+        df.columns[2]: 'High',
+        df.columns[3]: 'Low',
+        df.columns[4]: 'Open',
+        df.columns[5]: 'Volume',
+        df.columns[6]: 'Date',
+    })
+    # Only keep the expected columns
+    df = df[['Price', 'Close', 'High', 'Low', 'Open', 'Volume', 'Date']]
     if long_tail:
-        df.to_csv(folder / f"{stock_code}_long_tail.txt", sep="\t")
+        df.to_csv(folder / f"{stock_code}_long_tail.txt", sep="\t", index=False)
     else:
-        df.to_csv(folder / f"{stock_code}.txt", sep="\t")
+        df.to_csv(folder / f"{stock_code}.txt", sep="\t", index=False)
 
 
 def fetch_stock_data(stock_code, suffix, start, end):

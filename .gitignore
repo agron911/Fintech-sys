@@ -52,7 +52,7 @@ dmypy.json
 .vscode/
 
 # Data files
-data/
+# data/
 config/
 
 # OS files

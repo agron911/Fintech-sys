@@ -1,0 +1,3 @@
+Price	Close	High	Low	Open	Volume	Date
+Ticker	1701.TW	1701.TW	1701.TW	1701.TW	1701.TW	
+Date						
