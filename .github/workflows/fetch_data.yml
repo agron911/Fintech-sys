@@ -35,16 +35,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      # 5) (Optional) Show PYTHONPATH and sys.path to verify Python sees "src/"
-      - name: Show PYTHONPATH and Python's sys.path
-        run: |
-          echo ">>> PYTHONPATH is: '$PYTHONPATH'"
-          python - <<EOF
-import sys
-print("sys.path =", sys.path)
-EOF
-
       # 6) Run your fetch script with PYTHONPATH set to the repo root
       - name: Run fetch script
         run: |
