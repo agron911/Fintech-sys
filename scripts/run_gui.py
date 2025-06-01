@@ -1,5 +1,5 @@
-from investment_system.src.utils.logging import setup_logging
-from investment_system.gui.main import App
+from src.utils.logging import setup_logging
+from gui.main import App
 
 def main():
     setup_logging()

@@ -9,17 +9,17 @@ import matplotlib.patches as patches
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
 from pathlib import Path
-from investment_system.src.crawler.yahoo_finance import YahooFinanceCrawler
-from investment_system.src.backtest.backtester import Backtester
-from investment_system.src.utils.config import load_config
-from investment_system.src.utils.logging import setup_logging
-from investment_system.src.analysis.elliott_wave import detect_peaks_troughs, refined_elliott_wave_suggestion, plot_peaks_troughs, detect_corrective_waves, detect_elliott_wave_complete, plot_elliott_wave_analysis
+from src.crawler.yahoo_finance import YahooFinanceCrawler
+from src.backtest.backtester import Backtester
+from src.utils.config import load_config
+from src.utils.logging import setup_logging
+from src.analysis.elliott_wave import detect_peaks_troughs, refined_elliott_wave_suggestion, plot_peaks_troughs, detect_elliott_wave_complete, plot_elliott_wave_analysis, plot_elliott_wave_analysis_enhanced
 from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
-from investment_system.gui.constants import WEBLIST, CHART_TYPES
-from investment_system.gui.handlers import (
-    handle_storing_path, handle_crawl_data, handle_run_backtest, handle_show_elliott_wave, handle_analyze_current_position, handle_chart_type_change
+from gui.constants import WEBLIST, CHART_TYPES
+from gui.handlers import (
+    handle_storing_path, handle_crawl_data, handle_run_backtest, handle_show_elliott_wave, handle_analyze_current_position, handle_chart_type_change, create_candlestick_position_plot
 )
-from investment_system.gui.utils import resample_ohlc
+from src.utils.common_utils import resample_ohlc, map_points_to_ohlc
 import wx.lib.newevent
 
 UpdateOutputEvent, EVT_UPDATE_OUTPUT = wx.lib.newevent.NewEvent()
@@ -220,7 +220,6 @@ class MyFrame(wx.Frame):
     def _plot_candlestick_elliott_wave(self, df, wave_data, symbol):
         """Plot candlestick chart with Elliott Wave analysis"""
         try:
-            from .utils import resample_ohlc_improved
             # Determine resampling frequency
             freq_map = {
                 "Candlestick (Day)": 'D',
@@ -230,7 +229,7 @@ class MyFrame(wx.Frame):
             freq = freq_map.get(self.chart_type, 'D')
             
             # Resample OHLC data
-            df_ohlc = resample_ohlc_improved(df, freq)
+            df_ohlc = resample_ohlc(df, freq)
             
             # Clean resampled data
             df_ohlc = df_ohlc.dropna()
@@ -352,7 +351,7 @@ class MyFrame(wx.Frame):
                     style=style,
                     title=title,
                     volume=True,
-                    figsize=(fig_width, fig_height),
+                    figsize=tuple(self.figure.get_size_inches()),
                     panel_ratios=(4, 1),
                     addplot=additional_plots if additional_plots else None,
                     returnfig=True,
@@ -494,4 +493,20 @@ class MyFrame(wx.Frame):
         
         # Fix date labels
         self._fix_date_labels(self.ax, df)
-        self.canvas.draw() 
+        self.canvas.draw()
+
+    def _plot_line_elliott_wave_enhanced(self, df, wave_data, symbol):
+        """Enhanced line plotting for Elliott Wave analysis."""
+        self.ax.clear()
+        plot_elliott_wave_analysis_enhanced(
+            df, wave_data, column='close',
+            title=f"Elliott Wave Analysis for {symbol}", ax=self.ax
+        )
+        self._fix_date_labels(self.ax, df)
+        self.canvas.draw()
+
+    def _plot_candlestick_elliott_wave_enhanced(self, df, wave_data, symbol):
+        """Enhanced candlestick plotting with comprehensive Elliott Wave analysis."""
+        create_candlestick_position_plot(
+            self, df, {'position': 'Analysis Mode', 'confidence': wave_data.get('confidence', 0.0)}, wave_data, symbol
+        ) 

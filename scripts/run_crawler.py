@@ -1,7 +1,7 @@
 import pandas as pd
-from investment_system.src.crawler.yahoo_finance import YahooFinanceCrawler
-from investment_system.src.utils.config import load_config
-from investment_system.src.utils.logging import setup_logging
+from src.crawler.yahoo_finance import YahooFinanceCrawler
+from src.utils.config import load_config
+from src.utils.logging import setup_logging
 
 def main():
     setup_logging()

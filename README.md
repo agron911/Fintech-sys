@@ -71,6 +71,7 @@ MIT
 investment_system/
 ├── README.md
 ├── requirements.txt
+├── .gitignore
 ├── config/
 │   └── config.json
 ├── data/
@@ -78,34 +79,62 @@ investment_system/
 │   │   ├── international.txt
 │   │   └── adjustments/
 │   │       ├── list.xlsx
-│   │       └── otclist.xlsx
-│   └── raw/
-│       └── databases/
-│           └── All_stock_data.db
+│   │       ├── otclist.xlsx
+│   │       ├── list.xls
+│   │       └── otclist.xls
+│   ├── raw/
+│   │   ├── 3045.txt
+│   │   └── ...
 ├── scripts/
 │   ├── run_crawler.py
 │   ├── run_backtest.py
 │   └── run_gui.py
 ├── src/
 │   ├── analysis/
-│   │   └── elliott_wave.py
+│   │   ├── core/
+│   │   │   ├── alternation.py
+│   │   │   ├── corrective.py
+│   │   │   ├── fib_utils.py
+│   │   │   ├── impulse.py
+│   │   │   ├── models.py
+│   │   │   ├── peaks.py
+│   │   │   ├── position.py
+│   │   │   ├── trendlines.py
+│   │   │   ├── validation.py
+│   │   │   └── volume.py
+│   │   ├── plotters/
+│   │   │   └── impulse.py
+│   │   ├── elliott_wave.py
+│   │   └── indicators.py
 │   ├── backtest/
 │   │   ├── backtester.py
 │   │   └── strategy.py
 │   ├── crawler/
 │   │   ├── base_crawler.py
 │   │   ├── yahoo_finance.py
-│   │   └── data_cleaner.py
 │   └── utils/
+│       ├── common_utils.py
 │       ├── config.py
-│       ├── logging.py
-│       └── data_utils.py
-└── gui/
-    └── main.py
+│       ├── data_utils.py
+│       └── logging.py
+├── gui/
+│   ├── main.py
+│   ├── frame.py
+│   ├── handlers.py
+│   ├── utils.py
+│   └── constants.py
+└── tests/
+    └── test_candlestick_overlay.py
 ```
 
 - `config/`: Configuration files (e.g., `config.json`).
-- `data/`: Data files, including stock lists and the SQLite database.
+- `data/`: Data files, including stock lists, adjustments, raw/processed data, and the SQLite database.
+- `htmls/`: (Empty or for HTML outputs)
+- `models/`: (Empty or for ML/statistical models)
 - `scripts/`: Entry-point scripts for running the GUI, crawler, and backtester.
 - `src/`: Core source code (analysis, backtesting, crawling, utilities).
-- `gui/`: GUI application code. 
+  - `src/analysis/`: Contains modules for stock analysis, including `elliott_wave.py` for Elliott Wave analysis and `indicators.py` for technical indicators.
+    - `src/analysis/core/`: Core analysis modules like position, alternation, volume, etc.
+    - `src/analysis/plotters/`: Modules for plotting analysis results.
+- `gui/`: GUI application code.
+- `tests/`: Test scripts. 

@@ -1,7 +1,7 @@
 import pandas as pd
-from investment_system.src.utils.config import load_config
-from investment_system.src.utils.logging import setup_logging
-from investment_system.src.backtest.backtester import Backtester
+from src.utils.config import load_config
+from src.utils.logging import setup_logging
+from src.backtest.backtester import Backtester
 
 def main():
     setup_logging()

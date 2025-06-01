@@ -2,10 +2,10 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional
-from investment_system.src.utils.config import load_config
+from src.utils.config import load_config
 # from investment_system.src.utils.data_utils import load_from_database  # Placeholder, implement as needed
-from investment_system.src.analysis.elliott_wave import detect_peaks_troughs, refined_elliott_wave_suggestion
-from investment_system.src.backtest.strategy import backtest_elliott_strategy
+from src.analysis.elliott_wave import detect_peaks_troughs, refined_elliott_wave_suggestion
+from src.backtest.strategy import backtest_elliott_strategy
 
 class Backtester:
     def __init__(self, config: dict):
