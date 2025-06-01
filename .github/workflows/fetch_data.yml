@@ -2,41 +2,60 @@ name: Daily Data Fetch
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Every day at midnight UTC
-  workflow_dispatch:      # Allows manual trigger
+    - cron: '0 0 * * *'   # every day at midnight UTC
+  workflow_dispatch:     # allows you to trigger manually
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
+
     steps:
+      # 1) Checkout code
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          # <-- these are the defaults, but spelled out here to be explicit
+          fetch-depth: 1       # fetch just the tip to save time (no full history needed)
+          persist-credentials: true
 
-      - name: Set up Python
+      # 2) Debug: List all files so you can confirm "src/" is present
+      - name: List repository contents
+        run: |
+          echo ">>> GITHUB_WORKSPACE = $GITHUB_WORKSPACE"
+          ls -R $GITHUB_WORKSPACE
+
+      # 3) Set up Python 3.10
+      - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
+      # 4) Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$GITHUB_WORKSPACE/Fintech-sys" >> $GITHUB_ENV
-
-      - name: Show PYTHONPATH
+      # 5) (Optional) Show PYTHONPATH and sys.path to verify Python sees "src/"
+      - name: Show PYTHONPATH and Python's sys.path
         run: |
-          echo ">>> PYTHONPATH is: $PYTHONPATH"
-          python -c "import sys; print(sys.path)"
+          echo ">>> PYTHONPATH is: '$PYTHONPATH'"
+          python - <<EOF
+import sys
+print("sys.path =", sys.path)
+EOF
 
+      # 6) Run your fetch script with PYTHONPATH set to the repo root
       - name: Run fetch script
-        run: python scripts/run_fetch_data.py
+        run: |
+          PYTHONPATH=$GITHUB_WORKSPACE \
+            python scripts/run_fetch_data.py
 
+      # 7) Commit and push any new/updated files under data/
       - name: Commit and push data
         run: |
-          git config --global user.name 'agron911'
+          git config --global user.name  'agron911'
           git config --global user.email 'agron911@gmail.com'
           git add data/
           git commit -m "Update data [skip ci]" || echo "No changes to commit"
-          git push 
+          git push
