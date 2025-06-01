@@ -16,17 +16,12 @@ class BaseCrawler(ABC):
     def save_data(self, df: pd.DataFrame, symbol: str, long_tail: bool = False):
         folder = self.data_dir
         filename = f"{symbol}_long_tail.txt" if long_tail else f"{symbol}.txt"
-        # Ensure columns are named correctly
-        df = df.rename(columns={
-            df.columns[0]: 'Price',
-            df.columns[1]: 'Close',
-            df.columns[2]: 'High',
-            df.columns[3]: 'Low',
-            df.columns[4]: 'Open',
-            df.columns[5]: 'Volume',
-            df.columns[6]: 'Date',
-        })
-        df = df[['Price', 'Close', 'High', 'Low', 'Open', 'Volume', 'Date']]
+        # Flatten MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        # Ensure columns are named and ordered correctly
+        expected_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Date']
+        df = df[expected_cols]
         df.to_csv(folder / filename, sep="\t", index=False)
         self.logger.info(f"Saved data for {symbol} to {folder / filename}")
 

@@ -1,2 +1,1 @@
 Open	High	Low	Close	Volume	Date
-MRO	MRO	MRO	MRO	MRO	

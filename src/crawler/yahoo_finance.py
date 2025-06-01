@@ -55,18 +55,12 @@ def delete_files():
 
 
 def save_stock_data(df, stock_code, folder=save_file_path, long_tail=False):
-    # Drop 'Adj Close' if present
-    if 'Adj Close' in df.columns:
-        df = df.drop(columns=['Adj Close'])
-    # Add 'Date' column if not present
-    if 'Date' not in df.columns:
-        df['Date'] = df.index
-    # Define the expected columns in the desired order
+    # Flatten MultiIndex columns if present
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    # Ensure columns are named and ordered correctly
     expected_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Date']
-    # Only keep columns that exist in df
-    cols_to_use = [col for col in expected_cols if col in df.columns]
-    df = df[cols_to_use]
-    # Save to file
+    df = df[expected_cols]
     if long_tail:
         df.to_csv(folder / f"{stock_code}_long_tail.txt", sep="\t", index=False)
     else:
