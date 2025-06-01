@@ -23,7 +23,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import traceback
 import json
-from investment_system.src.utils.config import load_config
+from src.utils.config import load_config
 from .base_crawler import BaseCrawler
 from retrying import retry
 import logging
@@ -126,9 +126,9 @@ def crawl_otc_yf():
 
 # execute the delete and crawl crawl_all_ch which is not deprecated
 
-delete_files()
-crawl_all_ch()
-crawl_otc_yf()
+# delete_files()
+# crawl_all_ch()
+# crawl_otc_yf()
 
 class YahooFinanceCrawler(BaseCrawler):
     def __init__(self, config):
