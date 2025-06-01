@@ -18,7 +18,6 @@ import numpy as np
 from pathlib import Path
 import random
 import time
-import wx
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import traceback
