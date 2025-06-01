@@ -46,6 +46,6 @@ jobs:
         run: |
           git config --global user.name  'agron911'
           git config --global user.email 'agron911@gmail.com'
-          git add data/
+          git add -f data/
           git commit -m "Update data [skip ci]" || echo "No changes to commit"
           git push
