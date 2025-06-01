@@ -1,13 +1,14 @@
-from turtle import st
-from pandas_datareader import data as web
-import datetime as dt
+from pathlib import Path
+import pandas as pd
 import yfinance as yf
+import traceback
+from src.utils.config import load_config
+import datetime as dt
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 import os
 import requests
 from fake_useragent import UserAgent
-import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -15,17 +16,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import numpy as np
-from pathlib import Path
 import random
 import time
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import traceback
-import json
-from src.utils.config import load_config
+import logging
 from .base_crawler import BaseCrawler
 from retrying import retry
-import logging
 
 
 # yf.pdr_override()
