@@ -19,9 +19,14 @@ class BaseCrawler(ABC):
         # Flatten MultiIndex columns if present
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        # Ensure columns are named and ordered correctly
-        expected_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Date']
-        df = df[expected_cols]
+        df = df.copy()
+        # Insert 'Date' as the first column (from index)
+        df['Date'] = df.index
+        # Reorder columns and duplicate 'Date' at the end
+        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        df['Date_end'] = df['Date'].astype(str)
+        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Date_end']]
+        df.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Date']
         df.to_csv(folder / filename, sep="\t", index=False)
         self.logger.info(f"Saved data for {symbol} to {folder / filename}")
 
