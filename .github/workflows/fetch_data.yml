@@ -23,7 +23,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE/Fintech-sys" >> $GITHUB_ENV
+
+      - name: Show PYTHONPATH
+        run: |
+          echo ">>> PYTHONPATH is: $PYTHONPATH"
+          python -c "import sys; print(sys.path)"
 
       - name: Run fetch script
         run: python scripts/run_fetch_data.py
