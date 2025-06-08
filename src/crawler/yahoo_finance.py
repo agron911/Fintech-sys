@@ -133,9 +133,9 @@ def crawl_otc_yf():
 
 # execute the delete and crawl crawl_all_ch which is not deprecated
 
-delete_files()
-crawl_all_ch()
-crawl_otc_yf()
+# delete_files()
+# crawl_all_ch()
+# crawl_otc_yf()
 
 class YahooFinanceCrawler(BaseCrawler):
     def __init__(self, config):

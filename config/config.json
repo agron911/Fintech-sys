@@ -4,7 +4,7 @@
   "adjustments_dir": "data/lists/adjustments",
   "processed_dir": "data/processed",
   "start_date": "2002-01-01",
-  "end_date": "2025-05-20",
+  "end_date": "2026-12-20",
   "international_file": "data/lists/international.txt",
   "list_file": "data/lists/adjustments/list.xlsx",
   "otclist_file": "data/lists/adjustments/otclist.xlsx",

@@ -76,21 +76,16 @@ investment_system/
 │   └── config.json
 ├── data/
 │   ├── lists/
-│   │   ├── international.txt
-│   │   └── adjustments/
-│   │       ├── list.xlsx
-│   │       ├── otclist.xlsx
-│   │       ├── list.xls
-│   │       └── otclist.xls
-│   ├── raw/
-│   │   ├── 3045.txt
-│   │   └── ...
+│   ├── processed/
+│   └── raw/
 ├── scripts/
 │   ├── run_crawler.py
 │   ├── run_backtest.py
 │   └── run_gui.py
 ├── src/
 │   ├── analysis/
+│   │   ├── elliott_wave.py
+│   │   ├── indicators.py
 │   │   ├── core/
 │   │   │   ├── alternation.py
 │   │   │   ├── corrective.py
@@ -102,16 +97,14 @@ investment_system/
 │   │   │   ├── trendlines.py
 │   │   │   ├── validation.py
 │   │   │   └── volume.py
-│   │   ├── plotters/
-│   │   │   └── impulse.py
-│   │   ├── elliott_wave.py
-│   │   └── indicators.py
+│   │   └── plotters/
+│   │       └── impulse.py
 │   ├── backtest/
 │   │   ├── backtester.py
 │   │   └── strategy.py
 │   ├── crawler/
 │   │   ├── base_crawler.py
-│   │   ├── yahoo_finance.py
+│   │   └── yahoo_finance.py
 │   └── utils/
 │       ├── common_utils.py
 │       ├── config.py
@@ -127,14 +120,14 @@ investment_system/
     └── test_candlestick_overlay.py
 ```
 
-- `config/`: Configuration files (e.g., `config.json`).
-- `data/`: Data files, including stock lists, adjustments, raw/processed data, and the SQLite database.
-- `htmls/`: (Empty or for HTML outputs)
-- `models/`: (Empty or for ML/statistical models)
-- `scripts/`: Entry-point scripts for running the GUI, crawler, and backtester.
-- `src/`: Core source code (analysis, backtesting, crawling, utilities).
-  - `src/analysis/`: Contains modules for stock analysis, including `elliott_wave.py` for Elliott Wave analysis and `indicators.py` for technical indicators.
-    - `src/analysis/core/`: Core analysis modules like position, alternation, volume, etc.
-    - `src/analysis/plotters/`: Modules for plotting analysis results.
+**Key folders:**
+- `config/`: Configuration files.
+- `data/`: Stock lists, raw and processed data.
+- `scripts/`: Entry-point scripts for running the crawler, backtester, and GUI.
+- `src/`: Core source code, organized by domain:
+  - `analysis/`: Stock analysis modules (Elliott Wave, indicators, etc.).
+  - `backtest/`: Backtesting engine and strategies.
+  - `crawler/`: Data crawling logic.
+  - `utils/`: Shared utilities.
 - `gui/`: GUI application code.
-- `tests/`: Test scripts. 
+- `tests/`: Unit and integration tests. 
