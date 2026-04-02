@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(git add:*)",
+      "Bash(git mv:*)",
+      "Bash(cd:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(if exist \"PLAN_D_PHASE3_PROGRESS.md\" del \"PLAN_D_PHASE3_PROGRESS.md\")",
+      "Bash(dir /B *.md)",
+      "Bash(ls -1 Doc/*.md)",
+      "Bash(ls:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

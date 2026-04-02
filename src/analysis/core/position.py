@@ -1,45 +1,240 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Tuple, List, Optional
+from datetime import datetime, timedelta
 
 # Imports from other core modules (will refine as needed)
-from ..core.impulse import find_elliott_wave_pattern_enhanced
-from ..core.corrective import detect_corrective_patterns
-from ..core.models import WaveType
+from src.analysis.core.impulse import find_elliott_wave_pattern_enhanced
+from src.analysis.core.corrective_patterns import detect_corrective_patterns
+from src.analysis.core.models import WaveType
 
-def detect_current_wave_position_enhanced(df: pd.DataFrame, column: str = 'close') -> Dict[str, Any]:
+def detect_current_wave_position_enhanced(df: pd.DataFrame, 
+                                        wave_data: Dict[str, Any], 
+                                        column: str = 'close') -> Dict[str, Any]:
     """
-    Enhanced current wave position detection with comprehensive analysis.
+    Enhanced current position detection with multiple methods
     """
-    try:
-        # Analyze multiple timeframes for better accuracy
-        timeframes = {
-            'short': df.tail(250) if len(df) > 250 else df,  # ~1 year
-            'medium': df.tail(500) if len(df) > 500 else df,  # ~2 years
-            'long': df.tail(1000) if len(df) > 1000 else df   # ~4 years
+    current_price = df[column].iloc[-1]
+    current_date = df.index[-1]
+    
+    position_info = {
+        'current_wave': 'Unknown',
+        'wave_progress': 0.0,
+        'next_target': None,
+        'key_levels': {},
+        'confidence': 0.0,
+        'analysis_method': 'none'
+    }
+    
+    impulse_wave = wave_data.get('impulse_wave', np.array([]))
+    
+    if len(impulse_wave) == 0:
+        return detect_position_without_pattern(df, column)
+    
+    # Method 1: Position relative to detected waves
+    if len(impulse_wave) >= 2:
+        position_info = analyze_position_in_waves(
+            df, impulse_wave, current_price, current_date, column
+        )
+    
+    # Method 2: Fibonacci projection
+    fib_position = analyze_fibonacci_position(df, impulse_wave, current_price, column)
+    if fib_position['confidence'] > position_info['confidence']:
+        position_info.update(fib_position)
+    
+    # Method 3: Time-based analysis
+    time_position = analyze_time_based_position(df, impulse_wave, current_date)
+    position_info['time_analysis'] = time_position
+    
+    return position_info
+
+def analyze_position_in_waves(df: pd.DataFrame, 
+                            wave_points: np.ndarray,
+                            current_price: float,
+                            current_date: pd.Timestamp,
+                            column: str) -> Dict[str, Any]:
+    """Analyze current position within detected wave structure"""
+    
+    wave_prices = df[column].iloc[wave_points].values
+    wave_dates = df.index[wave_points]
+    
+    # Determine which wave we're likely in
+    last_wave_idx = wave_points[-1]
+    last_wave_date = wave_dates[-1]
+    days_since_last = (current_date - last_wave_date).days
+    
+    position_info = {
+        'analysis_method': 'wave_structure'
+    }
+    
+    if len(wave_points) >= 5:  # Complete 5-wave structure
+        # Check if we're in a corrective phase
+        wave_5_price = wave_prices[-1]
+        
+        # Calculate expected correction levels
+        total_move = wave_5_price - wave_prices[0]
+        fib_levels = {
+            '0.236': wave_5_price - total_move * 0.236,
+            '0.382': wave_5_price - total_move * 0.382,
+            '0.500': wave_5_price - total_move * 0.5,
+            '0.618': wave_5_price - total_move * 0.618
         }
+        
+        position_info['key_levels'] = fib_levels
+        
+        # Determine if we're still in wave 5 or starting correction
+        if days_since_last < 20:  # Recent completion
+            position_info['current_wave'] = 'Wave 5 completion / Early correction'
+            position_info['confidence'] = 0.7
+        else:
+            # Check correction depth
+            correction_depth = (wave_5_price - current_price) / total_move
+            if 0 < correction_depth < 0.236:
+                position_info['current_wave'] = 'Wave A of correction'
+            elif 0.236 <= correction_depth < 0.5:
+                position_info['current_wave'] = 'Wave B or C of correction'
+            else:
+                position_info['current_wave'] = 'Deep correction or new trend'
+            position_info['confidence'] = 0.6
+            
+    elif len(wave_points) >= 3:  # Partial structure
+        # We're likely in wave 3 or 4
+        wave_3_price = wave_prices[2] if len(wave_prices) > 2 else wave_prices[-1]
+        
+        if current_price > wave_3_price:
+            position_info['current_wave'] = 'Possible Wave 5 in progress'
+            position_info['next_target'] = wave_3_price * 1.618  # Common extension
+        else:
+            position_info['current_wave'] = 'Wave 4 correction'
+            position_info['next_target'] = wave_3_price * 0.618  # Support level
+        
+        position_info['confidence'] = 0.5
+    
+    return position_info
 
-        analyses = {}
+def analyze_fibonacci_position(df: pd.DataFrame,
+                             wave_points: np.ndarray,
+                             current_price: float,
+                             column: str) -> Dict[str, Any]:
+    """Analyze position using Fibonacci relationships"""
+    if len(wave_points) < 2:
+        return {'confidence': 0.0}
+    
+    wave_prices = df[column].iloc[wave_points].values
+    
+    # Calculate key Fibonacci levels
+    wave_start = wave_prices[0]
+    wave_high = max(wave_prices)
+    wave_low = min(wave_prices)
+    
+    trend_up = wave_prices[-1] > wave_prices[0]
+    
+    if trend_up:
+        range_size = wave_high - wave_low
+        fib_0 = wave_low
+        fib_100 = wave_high
+    else:
+        range_size = wave_high - wave_low
+        fib_0 = wave_high
+        fib_100 = wave_low
+    
+    # Calculate where current price sits in Fibonacci terms
+    if range_size > 0:
+        current_fib_level = abs(current_price - fib_0) / range_size
+    else:
+        current_fib_level = 0.5
+    
+    # Determine position based on Fibonacci level
+    position_info = {
+        'analysis_method': 'fibonacci',
+        'confidence': 0.5
+    }
+    
+    if 0.9 < current_fib_level < 1.1:
+        position_info['current_wave'] = 'Near wave completion (100% level)'
+    elif 0.55 < current_fib_level < 0.65:
+        position_info['current_wave'] = 'Near 61.8% retracement - key decision point'
+    elif 0.35 < current_fib_level < 0.4:
+        position_info['current_wave'] = 'Near 38.2% retracement - shallow correction'
+    elif current_fib_level > 1.618:
+        position_info['current_wave'] = 'Extended beyond 161.8% - possible wave 3 or 5 extension'
+    
+    return position_info
 
-        for tf_name, tf_data in timeframes.items():
-            if len(tf_data) >= 50:  # Minimum data requirement
-                wave_data = find_elliott_wave_pattern_enhanced(tf_data, column)
-                analyses[tf_name] = analyze_wave_position(tf_data, wave_data, column)
+def analyze_time_based_position(df: pd.DataFrame,
+                              wave_points: np.ndarray,
+                              current_date: pd.Timestamp) -> Dict[str, str]:
+    """Analyze position based on time relationships"""
+    if len(wave_points) < 2:
+        return {'time_position': 'unknown'}
+    
+    wave_dates = df.index[wave_points]
+    
+    # Calculate wave durations
+    wave_durations = []
+    for i in range(len(wave_dates) - 1):
+        duration = (wave_dates[i+1] - wave_dates[i]).days
+        wave_durations.append(duration)
+    
+    # Average wave duration
+    avg_duration = np.mean(wave_durations) if wave_durations else 30
+    
+    # Time since last wave point
+    days_since_last = (current_date - wave_dates[-1]).days
+    
+    # Estimate position based on time
+    if days_since_last < avg_duration * 0.3:
+        time_position = "Early in current wave"
+    elif days_since_last < avg_duration * 0.7:
+        time_position = "Middle of current wave"
+    elif days_since_last < avg_duration * 1.2:
+        time_position = "Late in current wave - watch for reversal"
+    else:
+        time_position = "Overextended - new pattern may be forming"
+    
+    return {
+        'time_position': time_position,
+        'days_since_last_wave': days_since_last,
+        'average_wave_duration': avg_duration
+    }
 
-        # Combine analyses for final assessment
-        final_assessment = combine_timeframe_analyses(analyses)
-
-        return final_assessment
-
-    except Exception as e:
-        return {
-            'position': 'Analysis Error',
-            'confidence': 0.0,
-            'forecast': f'Error in wave position analysis: {str(e)}',
-            'wave_type': 'error',
-            'details': {'error': str(e)}
-        }
-
+def detect_position_without_pattern(df: pd.DataFrame, column: str) -> Dict[str, Any]:
+    """Detect position using alternative methods when no clear pattern exists"""
+    current_price = df[column].iloc[-1]
+    
+    # Use simple trend and support/resistance analysis
+    sma_20 = df[column].rolling(20).mean().iloc[-1]
+    sma_50 = df[column].rolling(50).mean().iloc[-1]
+    sma_200 = df[column].rolling(200).mean().iloc[-1]
+    
+    # Determine trend
+    if current_price > sma_20 > sma_50 > sma_200:
+        trend = "Strong Uptrend"
+    elif current_price < sma_20 < sma_50 < sma_200:
+        trend = "Strong Downtrend"
+    else:
+        trend = "Consolidation/Unclear"
+    
+    # Find recent support/resistance
+    recent_high = df[column].iloc[-60:].max()
+    recent_low = df[column].iloc[-60:].min()
+    
+    position = {
+        'current_wave': f'No clear Elliott Wave - {trend}',
+        'wave_progress': 0.0,
+        'next_target': None,
+        'key_levels': {
+            'resistance': recent_high,
+            'support': recent_low,
+            'sma_20': sma_20,
+            'sma_50': sma_50,
+            'sma_200': sma_200
+        },
+        'confidence': 0.3,
+        'analysis_method': 'trend_analysis'
+    }
+    
+    return position
 
 def analyze_wave_position(df: pd.DataFrame, wave_data: Dict[str, Any], 
                          column: str = 'close') -> Dict[str, Any]:

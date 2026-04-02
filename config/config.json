@@ -8,5 +8,6 @@
   "international_file": "data/lists/international.txt",
   "list_file": "data/lists/adjustments/list.xlsx",
   "otclist_file": "data/lists/adjustments/otclist.xlsx",
-  "databases_dir": "data/raw/databases"
+  "databases_dir": "data/raw/databases",
+  "fibonacci_tolerance": 0.05
 } 

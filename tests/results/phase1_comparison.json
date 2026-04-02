@@ -1,0 +1,50 @@
+{
+  "test_date": "2025-12-06 16:45:36",
+  "symbol": "AAPL",
+  "data_rows": 2515,
+  "baseline": {
+    "initial_capital": 100000,
+    "final_capital": 100000,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0,
+    "total_profit": 0,
+    "total_return_pct": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "avg_win_pct": 0,
+    "avg_loss_pct": 0,
+    "profit_factor": 0,
+    "avg_r_multiple": 0,
+    "max_drawdown_pct": 0,
+    "sharpe_ratio": 0
+  },
+  "phase1": {
+    "initial_capital": 100000,
+    "final_capital": 100000,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0,
+    "total_profit": 0,
+    "total_return_pct": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "avg_win_pct": 0,
+    "avg_loss_pct": 0,
+    "profit_factor": 0,
+    "avg_r_multiple": 0,
+    "max_drawdown_pct": 0,
+    "sharpe_ratio": 0
+  },
+  "improvements": {
+    "win_rate": 0,
+    "profit_factor": 0,
+    "profit_factor_pct": 0,
+    "total_profit": 0,
+    "total_profit_pct": 0,
+    "trade_reduction": 0,
+    "trade_reduction_pct": 0
+  }
+}

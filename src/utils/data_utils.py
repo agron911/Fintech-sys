@@ -2,7 +2,6 @@ import pandas as pd
 import sqlite3
 from pathlib import Path
 from typing import Optional
-from investment_system.src.utils.config import load_config
 
 def init_database(db_path: Path) -> sqlite3.Connection:
     """

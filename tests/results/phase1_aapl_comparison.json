@@ -1,0 +1,53 @@
+{
+  "test_date": "2026-03-29 13:22:06",
+  "symbol": "AAPL",
+  "baseline": {
+    "initial_capital": 100000,
+    "final_capital": 100000,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0,
+    "total_profit": 0,
+    "total_return_pct": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "avg_win_pct": 0,
+    "avg_loss_pct": 0,
+    "profit_factor": 0,
+    "avg_r_multiple": 0,
+    "max_drawdown_pct": 0,
+    "sharpe_ratio": 0
+  },
+  "phase1": {
+    "initial_capital": 100000,
+    "final_capital": 100000,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0,
+    "total_profit": 0,
+    "total_return_pct": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "avg_win_pct": 0,
+    "avg_loss_pct": 0,
+    "profit_factor": 0,
+    "avg_r_multiple": 0,
+    "max_drawdown_pct": 0,
+    "sharpe_ratio": 0
+  },
+  "improvements": {
+    "win_rate_delta": 0,
+    "profit_factor_delta": 0,
+    "profit_factor_pct": 0,
+    "total_profit_delta": 0,
+    "total_profit_pct": 0,
+    "trade_reduction": 0,
+    "trade_reduction_pct": 0,
+    "drawdown_improvement": 0,
+    "sharpe_delta": 0,
+    "sharpe_pct": 0,
+    "success_score": 0
+  }
+}

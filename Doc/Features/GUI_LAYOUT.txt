@@ -1,0 +1,148 @@
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         INVESTMENT SYSTEM GUI                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Target: [ALL ▼]    Path: [/data/raw ........................] [Change Path]   │
+│                                                                                 │
+│  Stock: [Select Stock ▼]              Chart Type: [Line ▼]                     │
+│                                                                                 │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────┐ ┌────────────┐ ┌──────────────┐  │
+│  │Crawl Data│ │  Backtest│ │Show Elliott  │ │  Analyze   │ │ Scan All     │  │
+│  │          │ │          │ │    Wave      │ │  Position  │ │   Stocks ⭐  │  │
+│  └──────────┘ └──────────┘ └──────────────┘ └────────────┘ └──────────────┘  │
+│                                                                                 │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                          OUTPUT CONSOLE                                         │
+│ ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│ │ [1/100] ✓ AAPL: 15% (primary)                                               │ │
+│ │ [2/100] ✗ MSFT: No pattern                                                  │ │
+│ │ [3/100] ✓ TSLA: 8% (alternative)                                            │ │
+│ │ ...                                                                          │ │
+│ │ SCAN COMPLETE: Found 25 stocks with Elliott Wave patterns                   │ │
+│ └─────────────────────────────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐ ┌─────────────────────────────────────────────────────┐  │
+│  │ PATTERNS FOUND  │ │                 CHART AREA                          │  │
+│  │ ⭐ NEW FEATURE  │ │                                                     │  │
+│  ├─────────────────┤ │    [Elliott Wave Pattern Visualization Here]       │  │
+│  │AAPL (15%) 🟢 ←──┼─┤                                                     │  │
+│  │MSFT (12%) 🟢    │ │         [Wave 1-2-3-4-5 labeled on chart]          │  │
+│  │TSLA (8%) 🟡     │ │                                                     │  │
+│  │GOOGL (7%) 🟡    │ │    Click any stock in list to view its pattern ←── │  │
+│  │AMZN (6%) 🟡     │ │                                                     │  │
+│  │...              │ │                                                     │  │
+│  │                 │ │                                                     │  │
+│  │  (Sorted by     │ │                                                     │  │
+│  │   confidence)   │ │                                                     │  │
+│  │                 │ │                                                     │  │
+│  └─────────────────┘ └─────────────────────────────────────────────────────┘  │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+LEGEND:
+-------
+🟢 = Primary pattern (high confidence, strong Elliott Wave structure)
+🟡 = Alternative pattern (moderate confidence, valid but less ideal structure)
+✓ = Pattern found during scan
+✗ = No pattern found
+~ = Alternative pattern found
+
+
+HOW IT WORKS:
+-------------
+
+1. USER SELECTS CHART TYPE
+   ┌─────────────────────┐
+   │ Chart Type: [Day ▼] │  <-- Choose which timeframe to analyze
+   └─────────────────────┘
+         │
+         ├── Day: Analyzes last 5 years of daily data
+         ├── Week: Analyzes last 15 years of weekly data
+         └── Month: Analyzes all available monthly data
+
+2. USER CLICKS "Scan All Stocks"
+   ┌──────────────┐
+   │ Scan All     │  <-- Starts background scan
+   │   Stocks     │
+   └──────────────┘
+         │
+         └──> Scans every stock file in data/raw/
+              - Loads each stock's data
+              - Runs Elliott Wave detection
+              - Filters by confidence (≥5%)
+              - Adds to list if pattern found
+
+3. RESULTS APPEAR IN LEFT LIST
+   ┌─────────────────┐
+   │AAPL (15%) 🟢    │  <-- Sorted by confidence
+   │MSFT (12%) 🟢    │      (highest first)
+   │TSLA (8%) 🟡     │
+   └─────────────────┘
+         │
+         └──> Format: SYMBOL (confidence%) icon
+
+4. USER CLICKS A STOCK IN LIST
+   ┌─────────────────┐
+   │AAPL (15%) 🟢 ←──┼── Click here
+   └─────────────────┘
+         │
+         ├──> Automatically sets combo box to "AAPL"
+         ├──> Calls handle_show_elliott_wave()
+         └──> Chart updates with AAPL's pattern
+
+
+WORKFLOW EXAMPLE:
+----------------
+
+STEP 1: Choose timeframe
+  User: Selects "Candlestick (Week)"
+
+STEP 2: Start scan
+  User: Clicks "Scan All Stocks"
+  System: Disables buttons, starts background thread
+
+STEP 3: Watch progress
+  Output: [1/100] ✓ AAPL: 15% (primary)
+  Output: [2/100] ✗ MSFT: No pattern
+  Output: [3/100] ✓ TSLA: 8% (alternative)
+  ...
+  Output: SCAN COMPLETE: Found 25 stocks with patterns
+
+STEP 4: Browse results
+  List updates with 25 stocks sorted by confidence
+  Top 10 also shown in output window
+
+STEP 5: View individual patterns
+  User: Clicks "AAPL (15%) 🟢" in list
+  Chart: Updates to show AAPL with Elliott Wave overlay
+
+STEP 6: Try different timeframe (optional)
+  User: Changes to "Candlestick (Day)"
+  User: Clicks "Scan All Stocks" again
+  System: Re-scans using daily data
+  List: Updates with new daily patterns
+
+
+INTEGRATION WITH EXISTING FEATURES:
+-----------------------------------
+
+After clicking a stock from the scan list, you can use:
+
+┌──────────────┐  Shows detailed multi-pattern analysis
+│Show Elliott  │  (all timeframes, confidence scores, etc.)
+│    Wave      │
+└──────────────┘
+
+┌────────────┐  Determines which wave you're currently in
+│  Analyze   │  (Wave 1, 2, 3, 4, or 5)
+│  Position  │
+└────────────┘
+
+
+TIPS:
+-----
+✓ Weekly charts often show clearer Elliott Wave patterns
+✓ Scan different timeframes - patterns vary by scale
+✓ Focus on 🟢 primary patterns (>10% confidence) first
+✓ Re-scan after downloading new data
+✓ Use scan to find candidates, then analyze individually

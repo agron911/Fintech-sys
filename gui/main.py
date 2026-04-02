@@ -1,22 +1,17 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-from datetime import date
 import wx
 import os
-import pandas as pd
-import threading
+import sys
 from pathlib import Path
-from src.crawler.yahoo_finance import YahooFinanceCrawler
-from src.backtest.backtester import Backtester
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from src.utils.config import load_config
 from src.utils.logging import setup_logging
-from src.analysis.elliott_wave import detect_peaks_troughs, refined_elliott_wave_suggestion, plot_peaks_troughs, detect_elliott_wave_complete, plot_elliott_wave_analysis
-from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
-import matplotlib.pyplot as plt
-import numpy as np
-import mplfinance as mpf
-import matplotlib.patches as patches
 from gui.frame import MyFrame
 
 class App(wx.App):

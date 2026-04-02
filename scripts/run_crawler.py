@@ -1,5 +1,5 @@
 import pandas as pd
-from src.crawler.yahoo_finance import YahooFinanceCrawler
+from src.crawler.yahoo_finance import delete_files, YahooFinanceCrawler
 from src.utils.config import load_config
 from src.utils.logging import setup_logging
 
@@ -7,6 +7,9 @@ def main():
     setup_logging()
     config = load_config()
     crawler = YahooFinanceCrawler(config)
+
+    # Cleanup old files
+    delete_files()
 
     # Load stock lists
     international = pd.read_csv(config["international_file"])["code"]

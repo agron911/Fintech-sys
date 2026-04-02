@@ -25,37 +25,38 @@ def analyze_diagonal_volume_pattern(df: pd.DataFrame, wave_points: np.ndarray) -
 
 def validate_volume_patterns(df: pd.DataFrame, wave_points: np.ndarray) -> float:
     """
-    Validate Elliott Wave volume patterns.
-    - Wave 3 should have highest volume in the sequence
-    - Wave 5 often shows volume divergence (declining volume with price advance)
-    - Corrective waves (2, 4) typically have lower volume
+    Validate Elliott Wave volume patterns, robust to zero or missing volume data.
+    - Only considers wave points with valid (nonzero) volume.
+    - Returns neutral score if too few valid points.
     """
     if 'volume' not in df.columns or len(df['volume'].dropna()) == 0:
         return 0.5  # Neutral score if no volume data
-    try:
-        volumes = df['volume'].iloc[wave_points].values
-        if len(volumes) < 5:
-            return 0.5
-        confidence = 0.0
-        wave_3_volume = volumes[3]
-        max_volume = max(volumes)
-        if wave_3_volume == max_volume:
-            confidence += 0.4
-        elif wave_3_volume >= max_volume * 0.85:
+    # Only use wave points with valid (nonzero) volume
+    valid_points = [p for p in wave_points if p < len(df) and df['volume'].iloc[p] > 0]
+    if len(valid_points) < 3:
+        return 0.5  # Not enough valid volume data
+    volumes = df['volume'].iloc[valid_points].values
+    # Existing logic (adapted to valid_points):
+    confidence = 0.0
+    if len(volumes) < 5:
+        return 0.5
+    wave_3_volume = volumes[3]
+    max_volume = max(volumes)
+    if wave_3_volume == max_volume:
+        confidence += 0.4
+    elif wave_3_volume >= max_volume * 0.85:
+        confidence += 0.3
+    impulse_volumes = [volumes[1], volumes[3]]
+    corrective_volumes = [volumes[2], volumes[4]]
+    if len(volumes) > 5:
+        impulse_volumes.append(volumes[5])
+    avg_impulse_volume = np.mean(impulse_volumes)
+    avg_corrective_volume = np.mean(corrective_volumes)
+    if avg_impulse_volume > avg_corrective_volume:
+        confidence += 0.3
+    if len(volumes) > 5:
+        wave_1_volume = volumes[1]
+        wave_5_volume = volumes[5]
+        if wave_5_volume < wave_1_volume:
             confidence += 0.3
-        impulse_volumes = [volumes[1], volumes[3]]
-        corrective_volumes = [volumes[2], volumes[4]]
-        if len(volumes) > 5:
-            impulse_volumes.append(volumes[5])
-        avg_impulse_volume = np.mean(impulse_volumes)
-        avg_corrective_volume = np.mean(corrective_volumes)
-        if avg_impulse_volume > avg_corrective_volume:
-            confidence += 0.3
-        if len(volumes) > 5:
-            wave_1_volume = volumes[1]
-            wave_5_volume = volumes[5]
-            if wave_5_volume < wave_1_volume:
-                confidence += 0.3
-        return min(confidence, 1.0)
-    except Exception:
-        return 0.5 
+    return min(confidence, 1.0) 

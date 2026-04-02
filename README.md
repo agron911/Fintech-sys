@@ -38,7 +38,7 @@ The crawler is now modular and extensible:
 - **BaseCrawler**: Abstract class in `src/crawler/base_crawler.py` defines the interface and common logic.
 - **YahooFinanceCrawler**: Implementation in `src/crawler/yahoo_finance.py` for Yahoo Finance, with retry logic and robust error handling.
 - **run_crawler.py**: Script in `scripts/` to orchestrate crawling for all stock lists.
-- Logging is configured via `src/utils/logging.py`.
+- Logging is configured via `src/utils/app_logging.py`.
 - The crawler uses the `retrying` package for automatic retries on network errors.
 
 ## Configuration
@@ -50,7 +50,7 @@ Settings are stored in `config.json`:
   "stk2_dir": "stk2",
   "adjustments_dir": "adjustments",
   "start_date": "2000-01-01",
-  "end_date": "2024-12-24",
+  "end_date": "2025-12-24",
   "international_file": "international.txt",
   "list_file": "adjustments/list.xlsx",
   "otclist_file": "adjustments/otclist.xlsx"
@@ -69,24 +69,28 @@ MIT
 
 ```
 investment_system/
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── config/
-│   └── config.json
-├── data/
-│   ├── lists/
-│   ├── processed/
-│   └── raw/
-├── scripts/
-│   ├── run_crawler.py
-│   ├── run_backtest.py
-│   └── run_gui.py
-├── src/
-│   ├── analysis/
-│   │   ├── elliott_wave.py
-│   │   ├── indicators.py
-│   │   ├── core/
+├── README.md                 # Project documentation
+├── requirements.txt          # Python dependencies
+├── .gitignore               # Git ignore rules
+│
+├── config/                  # Configuration files
+│   └── config.json         # Main configuration file
+│
+├── data/                    # Data storage
+│   ├── lists/              # Stock lists and symbols
+│   ├── processed/          # Processed stock data
+│   └── raw/                # Raw downloaded data
+│
+├── scripts/                 # Executable scripts
+│   ├── run_crawler.py      # Data crawler script
+│   ├── run_backtest.py     # Backtesting script
+│   └── run_gui.py          # GUI launcher script
+│
+├── src/                     # Source code
+│   ├── analysis/           # Analysis modules
+│   │   ├── elliott_wave.py # Elliott Wave analysis
+│   │   ├── indicators.py   # Technical indicators
+│   │   ├── core/           # Core analysis components
 │   │   │   ├── alternation.py
 │   │   │   ├── corrective.py
 │   │   │   ├── fib_utils.py
@@ -97,37 +101,43 @@ investment_system/
 │   │   │   ├── trendlines.py
 │   │   │   ├── validation.py
 │   │   │   └── volume.py
-│   │   └── plotters/
+│   │   └── plotters/       # Visualization components
 │   │       └── impulse.py
-│   ├── backtest/
-│   │   ├── backtester.py
-│   │   └── strategy.py
-│   ├── crawler/
-│   │   ├── base_crawler.py
-│   │   └── yahoo_finance.py
-│   └── utils/
-│       ├── common_utils.py
-│       ├── config.py
-│       ├── data_utils.py
-│       └── logging.py
-├── gui/
-│   ├── main.py
-│   ├── frame.py
-│   ├── handlers.py
-│   ├── utils.py
-│   └── constants.py
-└── tests/
+│   │
+│   ├── backtest/           # Backtesting system
+│   │   ├── backtester.py   # Backtesting engine
+│   │   └── strategy.py     # Trading strategies
+│   │
+│   ├── crawler/            # Data collection
+│   │   ├── base_crawler.py # Base crawler class
+│   │   └── yahoo_finance.py # Yahoo Finance implementation
+│   │
+│   └── utils/              # Utility functions
+│       ├── common_utils.py # Common utilities
+│       ├── config.py       # Configuration handling
+│       ├── data_utils.py   # Data processing utilities
+│       └── logging.py      # Logging configuration
+│
+├── gui/                    # Graphical user interface
+│   ├── main.py            # Main GUI application
+│   ├── frame.py           # GUI frame components
+│   ├── handlers.py        # Event handlers
+│   ├── utils.py           # GUI utilities
+│   └── constants.py       # GUI constants
+│
+└── tests/                 # Test suite
     └── test_candlestick_overlay.py
 ```
 
-**Key folders:**
-- `config/`: Configuration files.
-- `data/`: Stock lists, raw and processed data.
-- `scripts/`: Entry-point scripts for running the crawler, backtester, and GUI.
-- `src/`: Core source code, organized by domain:
-  - `analysis/`: Stock analysis modules (Elliott Wave, indicators, etc.).
-  - `backtest/`: Backtesting engine and strategies.
-  - `crawler/`: Data crawling logic.
-  - `utils/`: Shared utilities.
-- `gui/`: GUI application code.
-- `tests/`: Unit and integration tests. 
+### Directory Descriptions
+
+- **config/**: Contains all configuration files including the main `config.json` for system settings
+- **data/**: Stores all data files including raw downloaded data and processed results
+- **scripts/**: Contains executable scripts for running different components of the system
+- **src/**: Core source code organized into functional modules:
+  - **analysis/**: Technical analysis tools and indicators
+  - **backtest/**: Backtesting engine and trading strategies
+  - **crawler/**: Data collection modules for different sources
+  - **utils/**: Shared utility functions and helpers
+- **gui/**: Complete GUI implementation using wxPython
+- **tests/**: Unit and integration tests for system components 
