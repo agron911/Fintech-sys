@@ -12,7 +12,8 @@
       "Bash(if exist \"PLAN_D_PHASE3_PROGRESS.md\" del \"PLAN_D_PHASE3_PROGRESS.md\")",
       "Bash(dir /B *.md)",
       "Bash(ls -1 Doc/*.md)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(/Library/Developer/CommandLineTools/usr/bin/python3:*)"
     ],
     "deny": [],
     "ask": []

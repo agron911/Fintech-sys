@@ -12,7 +12,7 @@ from pathlib import Path
 from src.crawler.yahoo_finance import YahooFinanceCrawler
 from src.backtest.backtester import Backtester
 from src.utils.config import load_config
-from src.utils.logging import setup_logging
+from src.utils.log_setup import setup_logging
 from src.analysis.plotters.elliott import plot_elliott_wave_analysis, plot_elliott_wave_analysis_enhanced
 from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
 from gui.constants import WEBLIST, CHART_TYPES

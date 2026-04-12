@@ -130,20 +130,20 @@ class MultiTimeframeAlignmentStrategy:
                 - stop_loss_pct: Stop loss percentage (default 0.02)
                 - profit_targets: List of R-multiples for profit taking
                 - use_confidence_filters: Enable Phase 1 filtering (default True)
-                - min_composite_confidence: Minimum composite confidence (default 0.65)
-                - min_validation_confidence: Minimum validation confidence (default 0.55)
+                - min_composite_confidence: Minimum composite confidence (default 0.35)
+                - min_validation_confidence: Minimum validation confidence (default 0.30)
         """
         self.config = config
-        self.alignment_threshold = config.get('alignment_threshold', 0.70)
-        self.fib_tolerance = config.get('fibonacci_tolerance', 0.15)
+        self.alignment_threshold = config.get('alignment_threshold', 0.40)
+        self.fib_tolerance = config.get('fibonacci_tolerance', 0.05)  # Tightened from 0.15
         self.volume_mult = config.get('volume_multiplier', 1.2)
         self.stop_loss_pct = config.get('stop_loss_pct', 0.02)
         self.profit_targets = config.get('profit_targets', [2.0, 3.0, 4.0])
 
         # PHASE 1: Confidence filtering configuration
         self.use_confidence_filters = config.get('use_confidence_filters', True)
-        self.min_composite_confidence = config.get('min_composite_confidence', 0.65)
-        self.min_validation_confidence = config.get('min_validation_confidence', 0.55)
+        self.min_composite_confidence = config.get('min_composite_confidence', 0.35)
+        self.min_validation_confidence = config.get('min_validation_confidence', 0.30)
 
         # Statistics tracking for Phase 1
         self.filter_stats = {
@@ -177,29 +177,63 @@ class MultiTimeframeAlignmentStrategy:
 
         signals = []
 
-        for i in range(len(df)):
+        # TREND FILTER: Skip BUY signals in bearish trends or counter-trend patterns
+        trend_ctx = pattern_analysis.get('trend_context', {})
+        broad_trend = trend_ctx.get('trend', 'neutral')
+        pattern_dir = pattern_analysis.get('current_position', {}).get('trend_direction', 'up')
+
+        # Only generate BUY signals for trend-aligned setups
+        buy_allowed = not (broad_trend == 'bearish' or
+                           (broad_trend == 'bullish' and pattern_dir == 'down'))
+
+        # Need at least 20 bars of history for volume average
+        start_bar = 20
+
+        for i in range(start_bar, len(df)):
             date = df.index[i]
             price = df['close'].iloc[i]
-            volume = df['volume'].iloc[i]
 
-            # Get alignment score for this date
+            # Get volume safely
+            vol_col = 'volume' if 'volume' in df.columns else 'Volume'
+            if vol_col not in df.columns:
+                continue
+            volume = df[vol_col].iloc[i]
+
+            # Get alignment score
             alignment = self._get_alignment_score(date, pattern_analysis)
 
             if alignment >= self.alignment_threshold:
-                # Check wave position
-                wave_pos = self._get_wave_position(date, pattern_analysis)
+                # Get wave position for this specific bar
+                wave_pos = self._get_wave_position_at_bar(i, df, pattern_analysis)
 
-                if wave_pos and wave_pos['wave_number'] in [1, 3]:
+                wave_num = wave_pos.get('wave_number', 0) if wave_pos else 0
+
+                # --- Momentum gate: skip entries when momentum is hostile ---
+                momentum = pattern_analysis.get('momentum', {})
+                momentum_entry_ok = momentum.get('entry_ok', True)
+                stop_mult = momentum.get('stop_multiplier', 1.0)
+
+                # --- BUY signals: Wave 1 and Wave 3 entries (trend-aligned only) ---
+                if wave_num in [1, 3] and buy_allowed:
                     # Check Fibonacci support
                     fib_levels = self._calculate_fib_levels(wave_pos)
 
                     if self._near_fib_support(price, fib_levels):
                         # Check volume
-                        avg_volume = df['volume'].iloc[max(0, i-20):i].mean()
+                        avg_volume = df[vol_col].iloc[max(0, i-20):i].mean()
+                        if avg_volume <= 0:
+                            continue
 
                         if volume >= avg_volume * self.volume_mult:
-                            # Generate BUY signal
-                            stop_loss = self._calculate_stop_loss(price, wave_pos)
+                            # Momentum gate: skip if momentum says no
+                            if not momentum_entry_ok:
+                                logger.debug(f"Signal filtered at {date}: momentum not confirming")
+                                continue
+
+                            # Generate BUY signal with velocity-adjusted stop
+                            base_stop = self._calculate_stop_loss(price, wave_pos)
+                            # Widen stop in volatile regimes, tighten in calm
+                            stop_loss = price - (price - base_stop) * stop_mult
 
                             signal = {
                                 'date': date,
@@ -221,17 +255,145 @@ class MultiTimeframeAlignmentStrategy:
                             else:
                                 signals.append(signal)
 
+                # --- MOMENTUM EXIT: Any wave, if momentum crashes ---
+                elif momentum.get('exit_warning', False) and wave_num >= 3:
+                    vel = momentum.get('velocity', {})
+                    speed = vel.get('speed_regime', 'flat')
+                    if speed in ('crash', 'fast_down'):
+                        signals.append({
+                            'date': date,
+                            'type': 'SELL',
+                            'price': price,
+                            'stop_loss': price * 1.03,
+                            'wave_number': wave_num,
+                            'alignment': alignment,
+                            'confidence': 0.8,
+                            'sell_reason': 'momentum_crash',
+                        })
+
+                # --- Wave 5/6: SELL exits or correction-bottom BUY ---
+                elif wave_num in [5, 6]:
+                    avg_volume = df[vol_col].iloc[max(0, i-20):i].mean()
+                    if avg_volume <= 0:
+                        continue
+
+                    # --- Correction-bottom BUY: after bullish impulse completes,
+                    # enter when price retraces to Fibonacci support levels ---
+                    trend_dir = wave_pos.get('trend_direction', 'unknown')
+                    if wave_num == 6 and trend_dir == 'up' and buy_allowed:
+                        w_prices = wave_pos.get('wave_prices', [])
+                        if len(w_prices) >= 2:
+                            impulse_start = w_prices[0]
+                            impulse_end = w_prices[-1]
+                            impulse_range = impulse_end - impulse_start
+                            if impulse_range > 0:
+                                for fib_ratio in [0.382, 0.5, 0.618]:
+                                    fib_level = impulse_end - impulse_range * fib_ratio
+                                    if abs(price - fib_level) / price <= self.fib_tolerance:
+                                        # Volume should be declining (correction exhaustion)
+                                        if volume < avg_volume * 0.9:
+                                            if not momentum_entry_ok:
+                                                continue
+                                            stop_loss = impulse_end - impulse_range * 0.786
+                                            signal = {
+                                                'date': date,
+                                                'type': 'BUY',
+                                                'price': price,
+                                                'stop_loss': stop_loss,
+                                                'wave_number': wave_num,
+                                                'alignment': alignment,
+                                                'confidence': 0.5 + fib_ratio * 0.3,
+                                                'entry_type': 'correction_bottom',
+                                                'fib_level': fib_ratio,
+                                            }
+                                            if self.use_confidence_filters:
+                                                if self._check_validation_confidence_filter(df, pattern_analysis, signal):
+                                                    self.filter_stats['final_signals'] += 1
+                                                    signals.append(signal)
+                                            else:
+                                                signals.append(signal)
+                                            break  # Only one fib level per bar
+
+                    # --- SELL signals: Wave 5 exhaustion ---
+                    sell_confidence = 0.0
+                    sell_reason = ''
+
+                    if wave_num == 6 and trend_dir != 'up':
+                        # Post-impulse correction of bearish impulse — sell
+                        sell_confidence = 0.7
+                        sell_reason = 'post_impulse_correction'
+                    elif wave_num == 5:
+                        # Check for Wave 5 exhaustion signals
+                        exhaustion_signals = 0
+
+                        # Volume divergence: Wave 5 volume < Wave 3 volume
+                        if volume < avg_volume * 0.7:
+                            exhaustion_signals += 1
+
+                        # Price extension check
+                        w1_range = wave_pos.get('wave_1_range', 0)
+                        w4_end = wave_pos.get('wave_4_end', price)
+                        if w1_range > 0:
+                            w5_progress = abs(price - w4_end) / w1_range
+                            if w5_progress >= 0.618:
+                                exhaustion_signals += 1
+                            if w5_progress >= 1.0:
+                                exhaustion_signals += 1
+
+                        if exhaustion_signals >= 2:
+                            sell_confidence = min(0.4 + exhaustion_signals * 0.1, 0.8)
+                            sell_reason = 'wave5_exhaustion'
+
+                    if sell_confidence > 0.3:
+                        signals.append({
+                            'date': date,
+                            'type': 'SELL',
+                            'price': price,
+                            'stop_loss': price * 1.03,  # Stop above for shorts
+                            'wave_number': wave_num,
+                            'alignment': alignment,
+                            'confidence': sell_confidence,
+                            'sell_reason': sell_reason,
+                        })
+
         return signals
 
     def _get_alignment_score(self, date, pattern_analysis: Dict) -> float:
         """Calculate alignment score across timeframes."""
-        # This would integrate with actual pattern analysis from elliott_wave.py
-        # For now, return placeholder
         return pattern_analysis.get('alignment_score', 0.0)
 
     def _get_wave_position(self, date, pattern_analysis: Dict) -> Optional[Dict]:
         """Get current wave position from pattern analysis."""
         return pattern_analysis.get('current_position', None)
+
+    def _get_wave_position_at_bar(self, bar_idx: int, df: pd.DataFrame,
+                                  pattern_analysis: Dict) -> Optional[Dict]:
+        """Get wave position for a specific bar using wave point indices."""
+        position = pattern_analysis.get('current_position')
+        if position is None:
+            return None
+
+        wave_indices = position.get('wave_indices', [])
+        if not wave_indices:
+            return position
+
+        # Determine which wave this bar is in
+        wave_num = 0
+        for i in range(len(wave_indices) - 1):
+            if wave_indices[i] <= bar_idx <= wave_indices[i + 1]:
+                wave_num = i + 1
+                break
+        else:
+            if bar_idx > wave_indices[-1]:
+                if len(wave_indices) >= 6:
+                    wave_num = 6  # correction
+                else:
+                    wave_num = len(wave_indices)
+
+        # Return position with bar-specific wave number
+        bar_position = dict(position)
+        bar_position['wave_number'] = wave_num
+        return bar_position
 
     def _calculate_fib_levels(self, wave_pos: Dict) -> List[float]:
         """Calculate Fibonacci retracement levels."""
@@ -414,7 +576,7 @@ class FibonacciMeanReversionStrategy:
         """
         self.config = config
         self.fib_levels = config.get('fib_entry_levels', [0.382, 0.618, 0.786])
-        self.fib_tolerance = config.get('fibonacci_tolerance', 0.15)
+        self.fib_tolerance = config.get('fibonacci_tolerance', 0.05)  # Tightened from 0.15
         self.stop_loss_pct = config.get('stop_loss_pct', 0.015)
         self.volume_decline_threshold = config.get('volume_decline', 0.7)
 
@@ -424,40 +586,52 @@ class FibonacciMeanReversionStrategy:
 
         Args:
             df: Price dataframe
-            pattern_analysis: Elliott Wave analysis
+            pattern_analysis: Elliott Wave analysis (adapted format)
 
         Returns:
             List of signal dictionaries
         """
         signals = []
+        wave_pos = pattern_analysis.get('current_position', {})
+        if not wave_pos:
+            return signals
 
-        for i in range(20, len(df)):  # Need history for volume average
+        vol_col = 'volume' if 'volume' in df.columns else 'Volume'
+        if vol_col not in df.columns:
+            return signals
+
+        wave_indices = wave_pos.get('wave_indices', [])
+
+        for i in range(20, len(df)):
             date = df.index[i]
             price = df['close'].iloc[i]
-            volume = df['volume'].iloc[i]
+            volume = df[vol_col].iloc[i]
+
+            # Determine wave number at this bar
+            bar_wave = 0
+            for wi in range(len(wave_indices) - 1):
+                if wave_indices[wi] <= i <= wave_indices[wi + 1]:
+                    bar_wave = wi + 1
+                    break
 
             # Check if in correction (Wave 2 or Wave 4)
-            wave_pos = pattern_analysis.get('current_position', {})
-
-            if wave_pos.get('wave_number') in [2, 4]:
-                # Calculate Fibonacci levels from impulse wave
+            if bar_wave in [2, 4]:
                 impulse_high = wave_pos.get('impulse_high', 0)
                 impulse_low = wave_pos.get('impulse_low', 0)
 
                 if impulse_high > 0 and impulse_low > 0:
                     diff = impulse_high - impulse_low
 
-                    # Check each Fibonacci level
                     for fib_ratio in self.fib_levels:
                         fib_level = impulse_high - diff * fib_ratio
 
                         if abs(price - fib_level) / price <= self.fib_tolerance:
-                            # Check volume declining
                             impulse_avg_vol = wave_pos.get('impulse_avg_volume', volume * 2)
-                            avg_volume = df['volume'].iloc[i-20:i].mean()
+                            avg_volume = df[vol_col].iloc[i-20:i].mean()
+                            if avg_volume <= 0:
+                                continue
 
                             if volume < impulse_avg_vol * self.volume_decline_threshold:
-                                # Generate BUY signal
                                 stop_loss = fib_level * (1 - self.stop_loss_pct)
 
                                 signals.append({
@@ -466,7 +640,7 @@ class FibonacciMeanReversionStrategy:
                                     'price': price,
                                     'stop_loss': stop_loss,
                                     'fib_level': fib_ratio,
-                                    'wave_number': wave_pos['wave_number'],
+                                    'wave_number': bar_wave,
                                     'confidence': self._calculate_confidence(fib_ratio, volume, avg_volume)
                                 })
                                 break
@@ -502,24 +676,40 @@ class PatternBreakoutStrategy:
     def generate_signals(self, df: pd.DataFrame, pattern_analysis: Dict) -> List[Dict]:
         """Generate breakout signals."""
         signals = []
+        wave_pos = pattern_analysis.get('current_position', {})
+        if not wave_pos:
+            return signals
+
+        vol_col = 'volume' if 'volume' in df.columns else 'Volume'
+        if vol_col not in df.columns:
+            return signals
+
+        wave_indices = wave_pos.get('wave_indices', [])
+        wave_1_high = wave_pos.get('wave_1_high', 0)
 
         for i in range(20, len(df)):
             date = df.index[i]
             price = df['close'].iloc[i]
-            volume = df['volume'].iloc[i]
+            volume = df[vol_col].iloc[i]
 
-            wave_pos = pattern_analysis.get('current_position', {})
+            # Determine wave number at this bar
+            bar_wave = 0
+            for wi in range(len(wave_indices) - 1):
+                if wave_indices[wi] <= i <= wave_indices[wi + 1]:
+                    bar_wave = wi + 1
+                    break
+            if i > wave_indices[-1] if wave_indices else True:
+                if len(wave_indices) >= 3:
+                    bar_wave = 3  # Could be starting wave 3
 
             # Check for Wave 3 starting (breakout above Wave 1 high)
-            if wave_pos.get('wave_number') == 3:
-                wave_1_high = wave_pos.get('wave_1_high', 0)
-
-                if wave_1_high > 0 and price > wave_1_high * (1 + self.breakout_pct):
-                    # Check volume surge
-                    avg_volume = df['volume'].iloc[i-20:i].mean()
+            if bar_wave == 3 and wave_1_high > 0:
+                if price > wave_1_high * (1 + self.breakout_pct):
+                    avg_volume = df[vol_col].iloc[i-20:i].mean()
+                    if avg_volume <= 0:
+                        continue
 
                     if volume >= avg_volume * self.volume_multiplier:
-                        # Check alignment
                         alignment = pattern_analysis.get('alignment_score', 0)
 
                         if alignment >= self.alignment_threshold:
@@ -543,6 +733,34 @@ class PatternBreakoutStrategy:
         alignment_score = alignment * 0.6
         volume_score = min((volume / avg_volume - 1.0) * 0.2, 0.4)
         return min(alignment_score + volume_score, 1.0)
+
+
+class TransactionCostModel:
+    """Models realistic trading friction: commissions, taxes, slippage."""
+
+    def __init__(self, commission_rate: float = 0.001425,
+                 sell_tax_rate: float = 0.003,
+                 slippage_rate: float = 0.0005):
+        """
+        Args:
+            commission_rate: Commission per side (default 0.1425% for Taiwan TWSE)
+            sell_tax_rate: Securities transaction tax on sells (default 0.3% for Taiwan)
+            slippage_rate: Estimated slippage per trade (default 0.05%)
+        """
+        self.commission_rate = commission_rate
+        self.sell_tax_rate = sell_tax_rate
+        self.slippage_rate = slippage_rate
+
+    def buy_cost(self, price: float, shares: int) -> float:
+        notional = price * shares
+        return notional * (self.commission_rate + self.slippage_rate)
+
+    def sell_cost(self, price: float, shares: int) -> float:
+        notional = price * shares
+        return notional * (self.commission_rate + self.sell_tax_rate + self.slippage_rate)
+
+    def round_trip_cost(self, entry_price: float, exit_price: float, shares: int) -> float:
+        return self.buy_cost(entry_price, shares) + self.sell_cost(exit_price, shares)
 
 
 class AdvancedBacktester:
@@ -572,6 +790,14 @@ class AdvancedBacktester:
             initial_capital,
             risk_per_trade=self.config.get('risk_per_trade', 0.02)
         )
+
+        # Transaction cost model (default: US market, low friction)
+        self.cost_model = TransactionCostModel(
+            commission_rate=self.config.get('commission_rate', 0.001),
+            sell_tax_rate=self.config.get('sell_tax_rate', 0.0),
+            slippage_rate=self.config.get('slippage_rate', 0.0005),
+        )
+        self.total_costs = 0.0
 
         # Initialize strategies
         self.strategies = {
@@ -611,74 +837,177 @@ class AdvancedBacktester:
         self.risk_manager.current_capital = current_capital
         self.risk_manager.reset_daily()
 
+        # Build signal lookup by date for O(1) access
+        signal_map = {}
         for signal in signals:
-            if signal['type'] == 'BUY':
-                if self.risk_manager.can_open_position():
-                    # Calculate position size
-                    shares = self.position_manager.calculate_position_size(
-                        signal['price'],
-                        signal['stop_loss']
-                    )
+            signal_map.setdefault(signal['date'], []).append(signal)
 
-                    # Open position
-                    position_value = shares * signal['price']
+        last_entry_date = None
 
-                    if position_value <= current_capital * 0.4:  # Max 40% per position
-                        position = {
-                            'entry_date': signal['date'],
-                            'entry_price': signal['price'],
-                            'shares': shares,
-                            'stop_loss': signal['stop_loss'],
-                            'wave_number': signal.get('wave_number'),
-                            'confidence': signal.get('confidence', 0.5)
-                        }
+        # Iterate over EVERY bar — exits must be checked daily, not just on signal dates
+        for bar_idx in range(len(df)):
+            date = df.index[bar_idx]
 
-                        self.open_positions[signal['date']] = position
-                        self.risk_manager.open_positions.append(position)
-                        current_capital -= position_value
+            # Check exits FIRST (before processing new entries)
+            if self.open_positions:
+                current_capital = self._check_exits(df, date, current_capital)
 
-                        logger.info(f"Opened position: {shares} shares @ ${signal['price']:.2f}")
+            # Process signals for this date
+            for signal in signal_map.get(date, []):
+                if signal['type'] == 'BUY':
+                    # Cooldown: skip if we opened a position within the last 5 bars
+                    if last_entry_date is not None:
+                        try:
+                            last_idx = df.index.get_loc(last_entry_date)
+                            if bar_idx - last_idx < 5:
+                                continue
+                        except (KeyError, TypeError):
+                            pass
 
-            # Check exits for open positions
-            self._check_exits(df, signal['date'], current_capital)
+                    if self.risk_manager.can_open_position():
+                        # Calculate position size
+                        shares = self.position_manager.calculate_position_size(
+                            signal['price'],
+                            signal['stop_loss']
+                        )
+
+                        # Open position
+                        position_value = shares * signal['price']
+
+                        if position_value <= current_capital * 0.4:  # Max 40% per position
+                            # Compute wave-based targets from pattern analysis
+                            targets = self._compute_wave_targets(signal, pattern_analysis)
+
+                            position = {
+                                'entry_date': signal['date'],
+                                'entry_price': signal['price'],
+                                'shares': shares,
+                                'stop_loss': signal['stop_loss'],
+                                'wave_number': signal.get('wave_number'),
+                                'confidence': signal.get('confidence', 0.5),
+                                'targets': targets,
+                            }
+
+                            self.open_positions[signal['date']] = position
+                            self.risk_manager.open_positions.append(position)
+                            buy_cost = self.cost_model.buy_cost(signal['price'], shares)
+                            current_capital -= position_value + buy_cost
+                            self.total_costs += buy_cost
+                            last_entry_date = signal['date']
+
+                            logger.info(f"Opened position: {shares} shares @ ${signal['price']:.2f} (cost: ${buy_cost:.2f})")
+
+                elif signal['type'] == 'SELL':
+                    # SELL signal: close open positions (profit-taking / wave completion)
+                    if self.open_positions:
+                        sell_reason = signal.get('sell_reason', 'sell_signal')
+                        for entry_date in list(self.open_positions.keys()):
+                            current_capital = self._close_position(
+                                entry_date, signal['date'], signal['price'],
+                                sell_reason, current_capital
+                            )
 
         # Close any remaining positions at end
         if len(df) > 0:
-            self._close_all_positions(df.index[-1], df['close'].iloc[-1], current_capital)
+            current_capital = self._close_all_positions(df.index[-1], df['close'].iloc[-1], current_capital)
 
         # Calculate statistics
         return self._calculate_statistics()
 
-    def _check_exits(self, df: pd.DataFrame, current_date, current_capital: float):
-        """Check for exit conditions on open positions."""
+    def _check_exits(self, df: pd.DataFrame, current_date, current_capital: float) -> float:
+        """Check for exit conditions on open positions using wave-aware logic."""
         positions_to_close = []
 
         for entry_date, position in self.open_positions.items():
-            # Get current price
-            if current_date in df.index:
-                current_price = df.loc[current_date, 'close']
+            if current_date not in df.index:
+                continue
 
-                # Check stop loss
-                if current_price <= position['stop_loss']:
-                    positions_to_close.append((entry_date, current_price, 'stop_loss'))
+            # Skip exit checks on entry day — don't stop out same-day
+            if current_date == entry_date:
+                continue
 
-                # Check profit targets (simplified - would use wave completion in practice)
-                profit_pct = (current_price - position['entry_price']) / position['entry_price']
+            current_price = df.loc[current_date, 'close']
 
-                if profit_pct >= 0.05:  # 5% profit
-                    positions_to_close.append((entry_date, current_price, 'profit_target'))
+            # 1. Check stop loss (always active)
+            if current_price <= position['stop_loss']:
+                positions_to_close.append((entry_date, current_price, 'stop_loss'))
+                continue
 
-        # Close positions
+            # 2. Update trailing stop if position is in profit
+            entry_price = position['entry_price']
+            risk_per_share = abs(entry_price - position['stop_loss'])
+            profit_per_share = current_price - entry_price
+
+            # Track highest price since entry for trailing stop
+            if 'highest_price' not in position:
+                position['highest_price'] = entry_price
+            position['highest_price'] = max(position['highest_price'], current_price)
+
+            # Activate trailing stop after reaching 1R profit
+            if risk_per_share > 0 and profit_per_share >= risk_per_share:
+                # Trail at 2x the risk distance below highest price
+                trail_distance = risk_per_share * 2.0
+                trailing_stop = position['highest_price'] - trail_distance
+
+                # Move stop up (never down)
+                if trailing_stop > position['stop_loss']:
+                    position['stop_loss'] = trailing_stop
+
+                # Also move to breakeven after 1.5R profit
+                if profit_per_share >= risk_per_share * 1.5:
+                    position['stop_loss'] = max(position['stop_loss'], entry_price * 1.005)
+
+            # 3. Wave-based profit targets
+            wave_num = position.get('wave_number', 0)
+            targets = position.get('targets', [])
+
+            if targets:
+                # Check if highest exceeded target is reached (sort descending)
+                for target in sorted(targets, reverse=True):
+                    if current_price >= target:
+                        positions_to_close.append((entry_date, current_price, f'target_{target:.2f}'))
+                        break
+            else:
+                # Fallback: wave-aware profit targets
+                profit_pct = profit_per_share / entry_price if entry_price > 0 else 0
+
+                if wave_num == 3:
+                    # Wave 3 trades: let them run, exit at 20%+ or on trailing stop
+                    if profit_pct >= 0.20:
+                        positions_to_close.append((entry_date, current_price, 'wave3_target'))
+                elif wave_num == 5:
+                    # Wave 5: tighter target, exhaustion risk
+                    if profit_pct >= 0.10:
+                        positions_to_close.append((entry_date, current_price, 'wave5_target'))
+                else:
+                    # Default: moderate target
+                    if profit_pct >= 0.12:
+                        positions_to_close.append((entry_date, current_price, 'profit_target'))
+
+        # Close positions, propagating updated capital
         for entry_date, exit_price, reason in positions_to_close:
-            self._close_position(entry_date, current_date, exit_price, reason, current_capital)
+            current_capital = self._close_position(entry_date, current_date, exit_price, reason, current_capital)
+        return current_capital
 
     def _close_position(self, entry_date, exit_date, exit_price: float,
-                       reason: str, current_capital: float):
-        """Close a position and record the trade."""
+                       reason: str, current_capital: float) -> float:
+        """Close a position and record the trade. Returns updated capital."""
         position = self.open_positions[entry_date]
 
-        profit = (exit_price - position['entry_price']) * position['shares']
-        profit_pct = (exit_price - position['entry_price']) / position['entry_price'] * 100
+        # Gross profit before costs
+        sell_cost = self.cost_model.sell_cost(exit_price, position['shares'])
+        self.total_costs += sell_cost
+        round_trip = self.cost_model.buy_cost(position['entry_price'], position['shares']) + sell_cost
+
+        profit = (exit_price - position['entry_price']) * position['shares'] - round_trip
+        profit_pct = profit / (position['entry_price'] * position['shares']) * 100
+
+        # Guard against division by zero in R-multiple calculation
+        risk_per_share = abs(position['entry_price'] - position['stop_loss'])
+        if risk_per_share > 0 and position['shares'] > 0:
+            r_multiple = profit / (risk_per_share * position['shares'])
+        else:
+            r_multiple = 0.0
 
         trade = {
             'entry_date': entry_date,
@@ -691,13 +1020,13 @@ class AdvancedBacktester:
             'exit_reason': reason,
             'wave_number': position.get('wave_number'),
             'confidence': position.get('confidence'),
-            'r_multiple': profit / ((position['entry_price'] - position['stop_loss']) * position['shares'])
+            'r_multiple': r_multiple
         }
 
         self.trades.append(trade)
 
-        # Update capital
-        current_capital += exit_price * position['shares']
+        # Update capital and propagate to risk/position managers
+        current_capital += exit_price * position['shares'] - sell_cost
         self.risk_manager.update_capital(current_capital)
         self.position_manager.update_portfolio_value(current_capital)
 
@@ -707,11 +1036,49 @@ class AdvancedBacktester:
                                             if p != position]
 
         logger.info(f"Closed position: {reason} - P/L: ${profit:.2f} ({profit_pct:.2f}%)")
+        return current_capital
 
-    def _close_all_positions(self, exit_date, exit_price: float, current_capital: float):
-        """Close all remaining positions."""
+    def _close_all_positions(self, exit_date, exit_price: float, current_capital: float) -> float:
+        """Close all remaining positions. Returns updated capital."""
         for entry_date in list(self.open_positions.keys()):
-            self._close_position(entry_date, exit_date, exit_price, 'end_of_backtest', current_capital)
+            current_capital = self._close_position(entry_date, exit_date, exit_price, 'end_of_backtest', current_capital)
+        return current_capital
+
+    def _compute_wave_targets(self, signal: Dict, pattern_analysis: Dict) -> List[float]:
+        """Compute Fibonacci-based profit targets from wave structure."""
+        targets = []
+        wave_pos = pattern_analysis.get('current_position', {})
+        if not wave_pos:
+            return targets
+
+        wave_num = signal.get('wave_number', 0)
+        entry_price = signal['price']
+        wave_1_range = wave_pos.get('wave_1_range', 0)
+
+        if wave_1_range <= 0:
+            return targets
+
+        if wave_num == 3:
+            # Wave 3 targets: Fibonacci extensions of Wave 1
+            wave_2_end = wave_pos.get('wave_2_end', entry_price)
+            targets = [
+                wave_2_end + wave_1_range * 1.618,
+                wave_2_end + wave_1_range * 2.618,
+            ]
+        elif wave_num == 1:
+            # Wave 1: modest target
+            targets = [entry_price + wave_1_range * 0.618]
+        elif wave_num == 5:
+            # Wave 5: conservative targets
+            wave_4_end = wave_pos.get('wave_4_end', entry_price)
+            targets = [
+                wave_4_end + wave_1_range * 0.618,
+                wave_4_end + wave_1_range * 1.0,
+            ]
+
+        # Filter out targets below entry
+        targets = [t for t in targets if t > entry_price * 1.01]
+        return targets
 
     def _calculate_statistics(self) -> Dict:
         """Calculate comprehensive backtest statistics."""
@@ -784,7 +1151,10 @@ class AdvancedBacktester:
                 max_dd = dd
 
         stats['max_drawdown_pct'] = max_dd * 100
+        stats['max_drawdown'] = max_dd
         stats['sharpe_ratio'] = self._calculate_sharpe(trades_df)
+        stats['total_costs'] = self.total_costs
+        stats['trades'] = self.trades
 
         return stats
 
@@ -803,8 +1173,8 @@ class AdvancedBacktester:
         return max_streak
 
     def _calculate_sharpe(self, trades_df: pd.DataFrame, risk_free_rate: float = 0.02) -> float:
-        """Calculate Sharpe ratio (annualized)."""
-        if len(trades_df) == 0:
+        """Calculate Sharpe ratio (annualized) using actual trade frequency."""
+        if len(trades_df) < 2:
             return 0
 
         returns = trades_df['profit_pct'] / 100
@@ -814,8 +1184,22 @@ class AdvancedBacktester:
         if std_return == 0:
             return 0
 
-        # Annualize (assume ~30 trades per year)
-        sharpe = (avg_return - risk_free_rate / 30) / std_return * np.sqrt(30)
+        # Estimate trades per year from actual data
+        if 'entry_date' in trades_df.columns and 'exit_date' in trades_df.columns:
+            try:
+                entry_dates = pd.to_datetime(trades_df['entry_date'])
+                total_days = (entry_dates.max() - entry_dates.min()).days
+                if total_days > 0:
+                    trades_per_year = len(trades_df) / (total_days / 252)
+                else:
+                    trades_per_year = 30
+            except Exception:
+                trades_per_year = 30
+        else:
+            trades_per_year = 30
+
+        trades_per_year = max(trades_per_year, 1)
+        sharpe = (avg_return - risk_free_rate / trades_per_year) / std_return * np.sqrt(trades_per_year)
         return sharpe
 
     def get_trades_dataframe(self) -> pd.DataFrame:

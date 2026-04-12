@@ -330,7 +330,7 @@ def validate_impulse_with_intelligent_subwaves(df: pd.DataFrame,
         
         subwave_confidence_boost = min(subwave_confidence_boost, 0.2)
         final_confidence = min(result['confidence'] + subwave_confidence_boost, 1.0)
-        final_confidence = min(final_confidence * 0.85, 1.0)
+        # Reality adjustment already applied in validation.py — no second discount
         
         validation_details.update({
             'subwave_insights': subwave_insights,
@@ -338,7 +338,7 @@ def validate_impulse_with_intelligent_subwaves(df: pd.DataFrame,
             'base_confidence': result['confidence']
         })
     else:
-        final_confidence = min(result['confidence'] * 0.85, 1.0)
+        final_confidence = result['confidence']  # Reality adjustment already in validation.py
     
     is_valid = final_confidence >= config.acceptance_threshold
     return is_valid, final_confidence, validation_details
@@ -381,13 +381,13 @@ def generate_impulse_candidates_with_intelligent_subwaves(df: pd.DataFrame,
                 sequence = result['sequence']
                 confidence = result.get('confidence', 0.0)
                 logger.debug(f"Candidate sequence: {sequence}, confidence: {confidence:.3f}")
-                if len(sequence) >= 5 and confidence > 0.04:  # Lowered from 0.08 to 0.04 for better detection
+                if len(sequence) >= 5 and confidence > 0.10:  # Minimum quality threshold
                     wave_points = np.array([point[0] for point in sequence])
                     is_valid, final_confidence, validation_details = validate_impulse_with_intelligent_subwaves(
                         df, wave_points, column, result.get('subwaves', [])
                     )
                     logger.debug(f"Validation: is_valid={is_valid}, final_confidence={final_confidence:.3f}")
-                    if is_valid or final_confidence > 0.06:  # Lowered from 0.12 to 0.06 for better detection
+                    if is_valid or final_confidence > 0.15:  # Meaningful confidence floor
                         wave_type = WaveType.IMPULSE
                         if validation_details.get('is_diagonal', False):
                             wave_type = WaveType.DIAGONAL_ENDING

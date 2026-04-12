@@ -1102,7 +1102,7 @@ class MultiTimeframeSequenceBuilder:
                                  column: str) -> List[MultiPatternSequence]:
         """Build sequences for a single timeframe"""
         # Detect peaks and troughs
-        from .peak_detection import detect_peaks_troughs_enhanced
+        from .peaks import detect_peaks_troughs_enhanced
         peaks, troughs = detect_peaks_troughs_enhanced(df, column)
         
         # Create labeled points

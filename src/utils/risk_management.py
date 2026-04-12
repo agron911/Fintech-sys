@@ -7,29 +7,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
-import sys
-import os
-
-# Avoid accidental shadowing of the standard library `logging` module
-# when this file is executed as a script (`python src/utils/risk_management.py`).
-# In that case, the script directory (`src/utils`) is added to `sys.path[0]`,
-# which can make a local `logging.py` (in `src/utils`) visible as the top-level
-# `logging` module. Temporarily remove the script directory from `sys.path`
-# while importing the stdlib `logging` module.
-_script_dir = os.path.dirname(__file__)
-removed_from_path = False
-if _script_dir in sys.path:
-    try:
-        sys.path.remove(_script_dir)
-        removed_from_path = True
-    except ValueError:
-        removed_from_path = False
-
 import logging
-
-# Restore path so other imports behave as before
-if removed_from_path:
-    sys.path.insert(0, _script_dir)
 
 logger = logging.getLogger(__name__)
 

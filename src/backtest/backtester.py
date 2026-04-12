@@ -3,10 +3,10 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from src.utils.config import load_config
-# from investment_system.src.utils.data_utils import load_from_database  # Placeholder, implement as needed
 from src.analysis.core.peaks import detect_peaks_troughs_enhanced
 from src.analysis.core.impulse import find_elliott_wave_pattern_enhanced
 from src.backtest.strategy_advanced import AdvancedBacktester
+from src.backtest.pattern_adapter import adapt_wave_data_to_strategy_input
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,18 +19,21 @@ class Backtester:
         self.data_dir = Path(config['stk2_dir'])
         self.processed_dir = Path(config['processed_dir'])
 
-    def run(self, symbols: List[str], min_price_changes: List[float] = [0.01, 0.03, 0.05, 0.1]):
+    def run(self, symbols: List[str], min_price_changes: List[float] = None):
         """
         Run backtest for a list of symbols and parameter combinations.
         """
+        if min_price_changes is None:
+            min_price_changes = [0.01, 0.03, 0.05, 0.1]
+
         for symbol in symbols:
             df = self.load_from_file(symbol)
             if df is None or 'close' not in df.columns:
                 logger.info(f"Skipping {symbol}: Data not found or missing 'close' column")
                 continue
-            
+
             for min_price_change in min_price_changes:
-                # Use enhanced pattern detection to build pattern analysis used by strategies
+                # Use enhanced pattern detection
                 wave_data = find_elliott_wave_pattern_enhanced(df, column='close')
 
                 # Skip if no meaningful pattern found
@@ -38,9 +41,12 @@ class Backtester:
                     logger.info(f"Skipping {symbol} (min_price_change={min_price_change}): No valid Elliott Wave pattern found")
                     continue
 
+                # Transform wave_data into the format strategies expect
+                pattern_analysis = adapt_wave_data_to_strategy_input(df, wave_data, column='close')
+
                 # Use the advanced backtester to evaluate the detected pattern
                 advanced = AdvancedBacktester(initial_capital=self.config.get('initial_capital', 100000), config=self.config)
-                stats = advanced.run_backtest(df, wave_data, strategy_name=self.config.get('default_strategy', 'multiframe'))
+                stats = advanced.run_backtest(df, pattern_analysis, strategy_name=self.config.get('default_strategy', 'multiframe'))
 
                 profit = stats.get('total_profit', 0) if isinstance(stats, dict) else 0
 
@@ -91,7 +97,7 @@ class Backtester:
     def analyze_stock(self, symbol: str, min_price_change: float = 0.02) -> Dict[str, Any]:
         """Analyze a stock using enhanced Elliott Wave detection."""
         try:
-            df = self.load_data(symbol)
+            df = self.load_from_file(symbol)
             if df is None or len(df) < 50:
                 return {"error": "insufficient_data"}
             

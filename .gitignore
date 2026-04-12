@@ -55,6 +55,10 @@ dmypy.json
 # data/
 config/
 
+# Environment / secrets
+.env
+.env.*
+
 # OS files
 .DS_Store
 Thumbs.db

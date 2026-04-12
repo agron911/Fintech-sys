@@ -11,7 +11,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.utils.config import load_config
-from src.utils.logging import setup_logging
+from src.utils.log_setup import setup_logging
 from gui.frame import MyFrame
 
 class App(wx.App):

@@ -178,6 +178,7 @@ def analyze_pattern_pair(pattern1: Dict, pattern2: Dict,
         'pattern2': {'timeframe': timeframe2, 'confidence': pattern2['confidence']},
         'overlap_ratio': overlap_ratio,
         'directional_agreement': directional_agreement,
+        'direction': direction1,  # Actual direction ('bullish'/'bearish'/'neutral')
         'phase_alignment': phase_alignment,
         'strength': strength
     }
@@ -512,11 +513,19 @@ def find_elliott_wave_pattern_enhanced(df: pd.DataFrame,
             "multiple_patterns": []
         }
 
-def find_best_impulse_wave(df: pd.DataFrame, peaks: np.ndarray, troughs: np.ndarray, 
-                          column: str = 'close', min_points: int = 6, 
-                          max_points: int = 12, candlestick_type: str = 'day') -> Dict[str, Any]:
+def find_best_impulse_wave(df: pd.DataFrame, peaks: np.ndarray, troughs: np.ndarray,
+                          column: str = 'close', min_points: int = 6,
+                          max_points: int = 12, candlestick_type: str = 'day',
+                          recency_weight: float = 0.0) -> Dict[str, Any]:
     """
     Find the best impulse wave pattern using the intelligent subwave system.
+    Prefers patterns that align with the broader SMA trend.
+
+    Args:
+        recency_weight: 0.0 = no recency preference (default).
+            Values > 0 boost patterns whose last wave point is near the end
+            of the data. Used by walk-forward validation to prefer in-progress
+            patterns over old completed ones.
     """
     from .intelligent_subwaves import SubwaveAnalysisConfig
     candidates = []
@@ -538,8 +547,76 @@ def find_best_impulse_wave(df: pd.DataFrame, peaks: np.ndarray, troughs: np.ndar
             "alternatives": [],
             "subwave_analysis": {}
         }
-    candidates.sort(key=lambda x: x["confidence"], reverse=True)
-    return candidates[0]
+
+    # Compute broad trend to prefer trend-aligned patterns
+    broad_trend = _get_broad_trend(df, column)
+    data_len = len(df)
+
+    for c in candidates:
+        wp = c['wave_points']
+        if len(wp) >= 2:
+            prices = df[column].iloc[wp].values
+            pattern_up = prices[-1] > prices[0]
+            c['_pattern_direction'] = 'up' if pattern_up else 'down'
+
+            # Trend alignment bonus/penalty
+            if broad_trend == 'bullish' and pattern_up:
+                c['_adjusted_confidence'] = c['confidence'] * 1.3
+            elif broad_trend == 'bearish' and not pattern_up:
+                c['_adjusted_confidence'] = c['confidence'] * 1.3
+            elif broad_trend == 'bullish' and not pattern_up:
+                c['_adjusted_confidence'] = c['confidence'] * 0.5
+            elif broad_trend == 'bearish' and pattern_up:
+                c['_adjusted_confidence'] = c['confidence'] * 0.6
+            else:
+                c['_adjusted_confidence'] = c['confidence']
+
+            # Recency bias: prefer patterns ending near the data boundary.
+            # A pattern whose last point is at the data end gets full credit;
+            # one ending at 50% of the data gets a penalty proportional to
+            # recency_weight. This helps walk-forward find in-progress patterns.
+            if recency_weight > 0:
+                last_wp = int(wp[-1])
+                recency_ratio = last_wp / max(data_len - 1, 1)
+                recency_factor = 1.0 - recency_weight * (1.0 - recency_ratio)
+                c['_adjusted_confidence'] *= recency_factor
+        else:
+            c['_adjusted_confidence'] = c['confidence']
+            c['_pattern_direction'] = 'unknown'
+
+    candidates.sort(key=lambda x: x["_adjusted_confidence"], reverse=True)
+    best = candidates[0]
+    best['trend_alignment'] = broad_trend
+    best['alternatives'] = candidates[1:6]  # Keep top alternatives
+    logger.debug(f"Best candidate: direction={best.get('_pattern_direction')}, "
+                 f"raw_conf={best['confidence']:.3f}, "
+                 f"adj_conf={best['_adjusted_confidence']:.3f}, "
+                 f"trend={broad_trend}")
+    return best
+
+
+def _get_broad_trend(df: pd.DataFrame, column: str = 'close') -> str:
+    """Determine broad market trend using SMA50/SMA200."""
+    prices = df[column]
+    if len(prices) < 50:
+        return 'neutral'
+
+    sma50 = prices.rolling(50).mean().iloc[-1]
+    current_price = float(prices.iloc[-1])
+
+    if len(prices) >= 200:
+        sma200 = prices.rolling(200).mean().iloc[-1]
+        if sma50 > sma200 and current_price > sma200:
+            return 'bullish'
+        elif sma50 < sma200 and current_price < sma200:
+            return 'bearish'
+        return 'neutral'
+    else:
+        if current_price > sma50 * 1.05:
+            return 'bullish'
+        elif current_price < sma50 * 0.95:
+            return 'bearish'
+        return 'neutral'
 
 def generate_impulse_candidates(df: pd.DataFrame, peaks: np.ndarray, troughs: np.ndarray,
                               start_type: str, column: str = 'close', 

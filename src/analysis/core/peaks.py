@@ -227,7 +227,7 @@ def multi_scale_detection(df: pd.DataFrame, column: str = 'close') -> Tuple[np.n
 
     PERFORMANCE OPTIMIZED: Reduced from 9 passes to 3 passes (3x faster)
     """
-    price_series = df[column].fillna(method='ffill').fillna(method='bfill')
+    price_series = df[column].ffill().bfill()
 
     all_peaks = []
     all_troughs = []
@@ -252,7 +252,7 @@ def multi_scale_detection(df: pd.DataFrame, column: str = 'close') -> Tuple[np.n
     # Apply optimal smoothing window (3 gives best noise reduction without losing peaks)
     smooth_window = 3
     smoothed = price_series.rolling(window=smooth_window, center=True).mean()
-    smoothed = smoothed.fillna(method='ffill').fillna(method='bfill')
+    smoothed = smoothed.ffill().bfill()
 
     try:
         peaks_scipy, _ = find_peaks(smoothed.values,

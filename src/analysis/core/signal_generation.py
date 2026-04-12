@@ -59,9 +59,9 @@ def generate_trading_signals(relationships: Dict[str, Any],
         if len(confirmations) >= 2:
             avg_strength = np.mean([c['strength'] for c in confirmations])
             if avg_strength > 0.7:
-                # Determine direction from first confirmation
+                # Determine direction from actual pattern direction, not just agreement
                 first_conf = confirmations[0]
-                is_bullish = first_conf['directional_agreement']
+                is_bullish = first_conf.get('direction', 'neutral') == 'bullish'
 
                 signals.append({
                     'type': 'strong_buy' if is_bullish else 'strong_sell',

@@ -948,17 +948,17 @@ __all__ = [
     'handle_scan_all_stocks', 'handle_load_scan', '_update_stocks_listbox',
 
     # Display functions
-    'display_wave_analysis_results', 'display_position_analysis_results',
-    'display_enhanced_wave_analysis_results_user_friendly',
+    'display_enhanced_wave_analysis_results', 'display_advanced_position_analysis_results',
+    'display_advanced_multi_pattern_results', 'display_advanced_multi_pattern_results_threadsafe',
 
     # Plotting functions
-    'update_current_position_plot_enhanced',
+    'update_advanced_position_plot',
 
     # Enhanced methods for frame integration
     '_plot_candlestick_elliott_wave_enhanced', '_plot_line_elliott_wave_enhanced',
 
     # Utility functions
-    'run_in_thread', 'get_trading_implications', 'validate_symbol_selection'
+    'run_in_thread', 'get_advanced_trading_implications', 'validate_symbol_selection'
 ]
 
 def _plot_candlestick_elliott_wave_multiple(self, df, wave_data, symbol):
