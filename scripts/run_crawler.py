@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 from src.crawler.yahoo_finance import delete_files, YahooFinanceCrawler
 from src.utils.config import load_config
