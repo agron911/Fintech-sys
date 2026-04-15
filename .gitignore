@@ -51,8 +51,9 @@ dmypy.json
 # VS Code
 .vscode/
 
-# Data files
-# data/
+# Data files — raw price data is stored in GitHub Releases, not in git
+data/raw/
+data/processed/
 config/
 
 # Environment / secrets

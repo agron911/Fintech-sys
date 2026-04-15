@@ -1,57 +1,62 @@
-name: weekly Data Fetch
+name: Weekly Data Fetch
 
-# 1) Grant the GITHUB_TOKEN write-access to this repo’s contents
 permissions:
   contents: write
 
 on:
   schedule:
     - cron: '0 0 * * 5,6'   # every Friday and Saturday at 00:00 UTC
-  workflow_dispatch:       # allow manual trigger
+  workflow_dispatch:         # allow manual trigger
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
 
     steps:
-      # 2) Checkout code with the default GITHUB_TOKEN
       - name: Checkout code
         uses: actions/checkout@v3
         with:
           fetch-depth: 1
-          persist-credentials: true   # <— this allows git push to use GITHUB_TOKEN
 
-      # 3) (Optional) Debug: list all files
-      - name: List repository contents
-        run: |
-          echo ">>> GITHUB_WORKSPACE = $GITHUB_WORKSPACE"
-          ls -R $GITHUB_WORKSPACE
-
-      # 4) Set up Python 3.10
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # 5) Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 6) Run your fetch script
       - name: Run fetch script
         run: |
           PYTHONPATH=$GITHUB_WORKSPACE \
             python scripts/run_fetch_data.py
 
-      # 7) Commit & push any changes under data/
-      - name: Commit and push data
+      - name: Package and upload data as GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config --global user.name  'github-actions[bot]'
-          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -f data/
-          git commit -m "Update data [skip ci]" || echo "No changes to commit"
-          # Pull any code changes pushed since checkout, then push
-          git pull --rebase origin main
-          git push
+          DATE=$(date +%Y-%m-%d)
+
+          # Package raw data into a tarball
+          tar -czf stock-data.tar.gz data/raw/
+
+          SIZE=$(du -h stock-data.tar.gz | cut -f1)
+          FILE_COUNT=$(find data/raw -name '*.txt' | wc -l)
+          echo "Packaged ${FILE_COUNT} files (${SIZE})"
+
+          # Delete the old "data-latest" release if it exists
+          gh release delete data-latest --yes 2>/dev/null || true
+          git push origin :refs/tags/data-latest 2>/dev/null || true
+
+          # Create a new release with the tarball
+          gh release create data-latest stock-data.tar.gz \
+            --title "Stock Data (${DATE})" \
+            --notes "Auto-updated stock price data.
+          - Date: ${DATE}
+          - Files: ${FILE_COUNT} stocks
+          - Size: ${SIZE}
+
+          Download: \`python scripts/download_data.py\`" \
+            --latest
