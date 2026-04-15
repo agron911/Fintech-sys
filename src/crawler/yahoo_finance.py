@@ -58,6 +58,9 @@ def delete_files():
 
 
 def save_stock_data(df, stock_code, folder=save_file_path, long_tail=False):
+    # Ensure the folder exists
+    folder.mkdir(parents=True, exist_ok=True)
+    
     # Flatten MultiIndex columns if present
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
