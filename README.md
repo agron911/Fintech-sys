@@ -32,6 +32,21 @@ This project is a stock price tracing and analysis system that fetches, processe
   This will fetch stock data for all configured lists and save them to the appropriate directories.
 - Data and results will be stored in the directories specified in `config.json`.
 
+## Data Updates
+
+Stock data is automatically updated weekly via CI and pushed to the `data-updates` branch.
+
+- **For developers**: Push code changes to `main` without data conflicts.
+- **To get latest data**: Merge the `data-updates` branch into your local `main`:
+  ```
+  git checkout main
+  git merge origin/data-updates
+  ```
+  Or checkout the `data-updates` branch directly:
+  ```
+  git checkout data-updates
+  ```
+
 ## Crawler System
 
 The crawler is now modular and extensible:

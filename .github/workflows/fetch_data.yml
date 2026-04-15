@@ -16,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
@@ -28,10 +28,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Ensure data directory exists
+        run: mkdir -p data/raw
+
       - name: Run fetch script
         run: |
           PYTHONPATH=$GITHUB_WORKSPACE \
             python scripts/run_fetch_data.py
+
+      - name: Commit and push data updates to data-updates branch
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git checkout data-updates 2>/dev/null || git checkout -b data-updates
+          git add data/raw/
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update stock data $(date +%Y-%m-%d)"
+            git push origin data-updates
+          fi
 
       - name: Package and upload data as GitHub Release
         env:
