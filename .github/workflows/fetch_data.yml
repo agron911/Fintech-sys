@@ -44,7 +44,7 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git fetch origin data-updates 2>/dev/null || true
           git checkout data-updates 2>/dev/null || git checkout -b data-updates
-          git add data/raw/
+          git add -f data/raw/
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
