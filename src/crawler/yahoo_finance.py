@@ -46,12 +46,26 @@ otclist_file = Path(config['otclist_file'])
 save_file_path = stk2_dir
 logger.info(save_file_path)
 
+# Update interval in days - files older than this will be re-fetched
+UPDATE_INTERVAL_DAYS = 7
+
+def should_update_file(file_path, max_age_days=UPDATE_INTERVAL_DAYS):
+    """Check if a file should be updated based on age."""
+    if not file_path.exists():
+        return True
+    
+    file_age = (dt.datetime.now() - dt.datetime.fromtimestamp(file_path.stat().st_mtime)).days
+    should_update = file_age >= max_age_days
+    
+    if not should_update:
+        logger.info(f"Skipping {file_path.name} - updated {file_age} days ago")
+    
+    return should_update
+
 def delete_files():
-    path = save_file_path
-    for file in path.glob("*.txt"):
-        file.chmod(0o777)
-        file.unlink()
-    return "Files deleted"
+    """Legacy function - kept for compatibility. Use incremental updates instead."""
+    logger.info("Incremental update mode: only updating files older than {} days".format(UPDATE_INTERVAL_DAYS))
+    return "Incremental update mode enabled"
 
 
 
@@ -123,6 +137,10 @@ def crawl_all_ch():
     international_stock = pd.read_csv(international_file)
     international_suffix = ""
     for code in international_stock["code"]:
+        file_path = save_file_path / f"{code}.txt"
+        if not should_update_file(file_path):
+            continue
+        
         df = fetch_stock_data(code, international_suffix, start, end)
         if df is not None:
             save_stock_data(df, code)
@@ -134,15 +152,20 @@ def crawl_all_ch():
     listed_code = '.TW'
 
     for code in stock_list.code:
+        file_path = save_file_path / f"{code}.txt"
+        if not should_update_file(file_path):
+            continue
+        
         df = fetch_stock_data(code, listed_code, start, end)
         if df is not None:
             save_stock_data(df, code)
             logger.info(f"Crawled: {code}")
-
         else:
             logger.info(f"Error fetching data for {code}")
             
-    df = fetch_stock_data("^TWII", "", start, end)
+    file_path = save_file_path / "TWII.txt"
+    if should_update_file(file_path):
+        df = fetch_stock_data("^TWII", "", start, end)
 
     if df is not None:
         save_stock_data(df, "TWII")
@@ -153,11 +176,14 @@ def crawl_otc_yf():
     otc_code = ".TWO"
     
     for code in all_otc_stock:
+        file_path = save_file_path / f"{code}.txt"
+        if not should_update_file(file_path):
+            continue
+        
         df = fetch_stock_data(code, otc_code, start, end)
         if df is not None:
             save_stock_data(df, code)
             logger.info(f"Crawled: {code}")
-
         else:
             logger.info(f"Error fetching data for {code}")
      
@@ -263,11 +289,27 @@ class YahooFinanceCrawler(BaseCrawler):
             traceback.print_exc()
 
     def crawl(self, symbols: list, suffix: str = ""):
+        """Crawl data for symbols with incremental updates.
+        
+        Only fetches data for symbols whose files are older than UPDATE_INTERVAL_DAYS.
+        """
+        skipped_count = 0
+        crawled_count = 0
+        
         for symbol in symbols:
-            # Pass suffix through to fetch_data so logging and downloads show the full ticker
+            # Check if file needs updating
+            file_path = self.data_dir / f"{symbol}.txt"
+            if not should_update_file(file_path):
+                skipped_count += 1
+                continue
+            
+            # Fetch and save data
             df = self.fetch_data(symbol, self.config["start_date"], self.config["end_date"], suffix=suffix)
             if df is not None:
                 self.save_data(df, symbol)
                 self.logger.info(f"Crawled data for {symbol}")
+                crawled_count += 1
             else:
                 self.logger.warning(f"Failed to fetch data for {symbol}")
+        
+        self.logger.info(f"Crawl complete - Fetched: {crawled_count}, Skipped: {skipped_count}")

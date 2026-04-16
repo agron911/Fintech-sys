@@ -16,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
@@ -33,6 +33,8 @@ jobs:
 
       - name: Run fetch script
         run: |
+          # Incremental update: only fetches data for files older than 7 days
+          # Existing recent data is preserved, avoiding full re-download
           PYTHONPATH=$GITHUB_WORKSPACE \
             python scripts/run_fetch_data.py
 
@@ -40,6 +42,7 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git fetch origin data-updates 2>/dev/null || true
           git checkout data-updates 2>/dev/null || git checkout -b data-updates
           git add data/raw/
           if git diff --staged --quiet; then

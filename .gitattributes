@@ -1,0 +1,8 @@
+# Large data files should use Git LFS for efficiency
+data/raw/*.txt filter=lfs diff=lfs merge=lfs -text
+data/raw/**/*.txt filter=lfs diff=lfs merge=lfs -text
+cache/*.json filter=lfs diff=lfs merge=lfs -text
+
+# Keep config files human-readable
+config/*.json diff merge
+config/*.yaml diff merge

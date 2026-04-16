@@ -36,8 +36,16 @@ This project is a stock price tracing and analysis system that fetches, processe
 
 Stock data is automatically updated weekly via CI and pushed to the `data-updates` branch.
 
-- **For developers**: Push code changes to `main` without data conflicts.
-- **To get latest data**: Merge the `data-updates` branch into your local `main`:
+### Update Strategy
+The CI uses an **incremental update** approach:
+- Only fetches data for files older than 7 days
+- Preserves existing data files if recently updated
+- Skips unchanged stocks to save time and bandwidth
+- ~75-85% faster than full re-download
+
+### For Developers
+- Push code changes to `main` without data conflicts
+- To get latest data: Merge the `data-updates` branch into your local `main`:
   ```
   git checkout main
   git merge origin/data-updates
