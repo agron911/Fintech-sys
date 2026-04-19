@@ -49,7 +49,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Update stock data $(date +%Y-%m-%d)"
-            git push origin data-updates
+            git push --force origin data-updates
           fi
 
       - name: Package and upload data as GitHub Release
