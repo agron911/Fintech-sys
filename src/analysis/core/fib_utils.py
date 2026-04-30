@@ -32,10 +32,15 @@ def calculate_rate_of_change_projection(p1: float, p2: float, p3: float, ratio: 
         
     # Calculate percentage change from Wave 2 to Wave 3
     pe = (p3 - p2) / p2
-    
+
+    # Guard: negative base with fractional exponent produces invalid (complex) values
+    base = 1 + pe
+    if base < 0 and ratio != int(ratio):
+        return 0.0
+
     # Project forward using the ratio
-    p_target = p1 * (1 + pe) ** ratio
-    
+    p_target = p1 * base ** ratio
+
     return p_target
 
 def validate_rate_of_change_projection(waves: dict, tolerance: float = 0.0) -> Tuple[float, List[float]]:

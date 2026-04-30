@@ -529,11 +529,9 @@ class TestBugRegressions:
 
     def test_target_exit_uses_highest_target(self):
         """
-        Bug 2: sorted(targets) exits at lowest exceeded target.
-        Should exit at highest exceeded target (sorted descending).
-
-        Setup: Price reaches $150, targets at $120 and $140.
-        Old code: exits at $120 (lowest exceeded). Fixed: exits at $140.
+        With partial profit-taking (P2.1), both targets exceeded on same bar:
+        - First: partial close (50% shares) at first target ($120)
+        - Then: full close (remaining shares) at highest target ($140)
         """
         bt = AdvancedBacktester(initial_capital=100_000)
         entry_date = pd.Timestamp('2024-01-01')
@@ -559,10 +557,12 @@ class TestBugRegressions:
         date = df.index[1]
         bt._check_exits(df, date, 95_000.0)
 
-        # Should have closed at the highest target (140), not lowest (120)
-        assert len(bt.trades) == 1
-        assert 'target_140.00' in bt.trades[0]['exit_reason'], \
-            f"Should exit at target 140, got: {bt.trades[0]['exit_reason']}"
+        # Should produce 2 trades: partial at first target + full at highest target
+        assert len(bt.trades) == 2
+        assert 'partial_120.00' in bt.trades[0]['exit_reason'], \
+            f"First trade should be partial at 120, got: {bt.trades[0]['exit_reason']}"
+        assert 'target_140.00' in bt.trades[1]['exit_reason'], \
+            f"Second trade should exit at target 140, got: {bt.trades[1]['exit_reason']}"
 
     def test_load_data_method_exists(self):
         """
@@ -577,3 +577,145 @@ class TestBugRegressions:
         source = inspect.getsource(Backtester.analyze_stock)
         assert 'load_data' not in source or 'load_from_file' in source, \
             "analyze_stock should use load_from_file, not load_data"
+
+
+# ============================================================================
+# P2.1: ATR-Adaptive Exits & Partial Profit Tests
+# ============================================================================
+
+class TestATRAdaptiveExits:
+
+    def test_partial_close_reduces_shares(self):
+        """Partial close should reduce share count and book profit."""
+        bt = AdvancedBacktester(initial_capital=100_000)
+        entry_date = pd.Timestamp('2024-01-01')
+        bt.open_positions[entry_date] = {
+            'entry_date': entry_date,
+            'entry_price': 100.0,
+            'shares': 100,
+            'stop_loss': 95.0,
+            'wave_number': 3,
+            'confidence': 0.6,
+            'targets': [115.0, 130.0],
+        }
+        bt.risk_manager.open_positions.append(bt.open_positions[entry_date])
+
+        cap = bt._partial_close(entry_date, pd.Timestamp('2024-01-15'), 115.0,
+                                50, 'partial_115', 90_000.0)
+        assert bt.open_positions[entry_date]['shares'] == 50
+        assert len(bt.trades) == 1
+        assert bt.trades[0]['profit'] > 0
+        assert cap > 90_000
+
+    def test_partial_close_moves_stop_to_breakeven(self):
+        """After partial profit, stop should move to breakeven."""
+        bt = AdvancedBacktester(initial_capital=100_000)
+        entry_date = pd.Timestamp('2024-01-01')
+        bt.open_positions[entry_date] = {
+            'entry_date': entry_date,
+            'entry_price': 100.0,
+            'shares': 100,
+            'stop_loss': 95.0,
+            'wave_number': 3,
+            'confidence': 0.6,
+            'targets': [115.0, 130.0],
+        }
+        bt.risk_manager.open_positions.append(bt.open_positions[entry_date])
+
+        bt._partial_close(entry_date, pd.Timestamp('2024-01-15'), 115.0,
+                          50, 'partial', 90_000.0)
+        # Stop should be at breakeven (entry * 1.007)
+        assert bt.open_positions[entry_date]['stop_loss'] >= 100.0 * 1.007
+
+    def test_sortino_ratio_calculated(self):
+        """Stats should include sortino_ratio."""
+        bt = AdvancedBacktester(initial_capital=100_000)
+        bt.trades = [
+            {'profit': 500, 'profit_pct': 5.0, 'r_multiple': 1.5,
+             'entry_date': '2024-01-01', 'exit_date': '2024-01-10',
+             'entry_price': 100, 'exit_price': 105, 'shares': 100},
+            {'profit': -200, 'profit_pct': -2.0, 'r_multiple': -1.0,
+             'entry_date': '2024-02-01', 'exit_date': '2024-02-10',
+             'entry_price': 100, 'exit_price': 98, 'shares': 100},
+        ]
+        stats = bt._calculate_statistics()
+        assert 'sortino_ratio' in stats
+
+    def test_transaction_costs_reduce_profit(self):
+        """Trades should include realistic transaction costs."""
+        bt = AdvancedBacktester(initial_capital=100_000, config={
+            'commission_rate': 0.001425,
+            'sell_tax_rate': 0.003,
+            'slippage_rate': 0.001,
+        })
+        entry_date = pd.Timestamp('2024-01-01')
+        bt.open_positions[entry_date] = {
+            'entry_date': entry_date,
+            'entry_price': 100.0,
+            'shares': 100,
+            'stop_loss': 95.0,
+            'wave_number': 3,
+            'confidence': 0.6,
+            'targets': [],
+        }
+        bt.risk_manager.open_positions.append(bt.open_positions[entry_date])
+
+        bt._close_position(entry_date, pd.Timestamp('2024-01-15'), 105.0, 'test', 90_000)
+        # Raw profit = 500, but costs should reduce it
+        assert bt.trades[0]['profit'] < 500
+        assert bt.total_costs > 0
+
+
+# ============================================================================
+# Monte Carlo Tests
+# ============================================================================
+
+class TestMonteCarlo:
+
+    def test_basic_simulation(self):
+        from src.backtest.monte_carlo import MonteCarloSimulator
+        mc = MonteCarloSimulator(n_simulations=1000, seed=42)
+        trades = [{'profit': 100}, {'profit': -50}, {'profit': 200},
+                  {'profit': -80}, {'profit': 150}]
+        result = mc.run(trades, initial_capital=10000)
+        assert result['n_simulations'] == 1000
+        assert result['n_trades'] == 5
+        assert 'final_equity' in result
+        assert 'max_drawdown' in result
+        assert result['probability_of_profit'] > 0
+
+    def test_insufficient_trades(self):
+        from src.backtest.monte_carlo import MonteCarloSimulator
+        mc = MonteCarloSimulator()
+        result = mc.run([{'profit': 100}])
+        assert 'error' in result
+
+    def test_all_winners(self):
+        from src.backtest.monte_carlo import MonteCarloSimulator
+        mc = MonteCarloSimulator(n_simulations=100)
+        trades = [{'profit': 100}] * 10
+        result = mc.run(trades, initial_capital=10000)
+        assert result['probability_of_profit'] == 1.0
+        assert result['final_equity']['median'] == 11000
+
+
+# ============================================================================
+# Regime Detection Tests
+# ============================================================================
+
+class TestRegimeDetection:
+
+    def test_detect_regime_trending(self):
+        from src.analysis.core.regime import detect_regime
+        # Strong uptrend should show strong trend
+        prices = np.linspace(100, 200, 200)
+        df = make_ohlcv(prices.tolist())
+        regime = detect_regime(df)
+        assert regime['trend_strength'] in ('strong', 'moderate')
+        assert regime['regime'] != 'insufficient_data'
+
+    def test_detect_regime_short_data(self):
+        from src.analysis.core.regime import detect_regime
+        df = make_ohlcv([100, 101, 102])
+        regime = detect_regime(df)
+        assert regime['regime'] == 'insufficient_data'

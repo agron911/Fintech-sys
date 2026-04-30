@@ -20,6 +20,7 @@ from src.utils.common_utils import (
     get_position_color
 )
 from src.analysis.core.utils import calculate_base_confidence, validate_data_quality
+from src.analysis.core.signal_scoring import analyze_stock, classify_action, apply_market_regime
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +94,13 @@ def handle_crawl_data(self, event):
         # Crawl with progress feedback
         success_count = 0
         fail_count = 0
+        total = len(symbols)
 
         for i, symbol in enumerate(symbols, 1):
             try:
+                wx.CallAfter(self.update_progress, i, total)
+                wx.CallAfter(self.update_status, f"Crawling {symbol}...", 0)
+
                 # Determine suffix for this symbol (TWII has no suffix)
                 if symbol == 'TWII':
                     per_suffix = ""
@@ -127,6 +132,9 @@ def handle_crawl_data(self, event):
                 wx.PostEvent(self, UpdateOutputEvent(
                     message=f"[{i}/{len(symbols)}] [FAIL] {symbol}: {str(e)}\n"))
 
+        wx.CallAfter(self.reset_progress)
+        wx.CallAfter(self.update_status, "Crawl complete", 0)
+
         wx.PostEvent(self, UpdateOutputEvent(
             message=f"\nCrawling completed: {success_count} succeeded, {fail_count} failed\n"))
 
@@ -150,6 +158,7 @@ def handle_run_backtest(self, event):
             return
 
         wx.PostEvent(self, UpdateOutputEvent(message=f"Running backtest for {symbol}...\n"))
+        wx.CallAfter(self.update_status, f"Running backtest for {symbol}...", 0)
         self.backtester.run([symbol])
         results_df = self.backtester.summarize()
         
@@ -160,6 +169,8 @@ def handle_run_backtest(self, event):
             wx.PostEvent(self, UpdateOutputEvent(message="Backtest completed successfully.\n"))
         else:
             wx.PostEvent(self, UpdateOutputEvent(message=f"No backtest results found for {symbol}.\n"))
+
+        wx.CallAfter(self.update_status, "Backtest complete", 0)
 
         # Re-enable buttons after completion
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
@@ -225,6 +236,7 @@ def handle_show_elliott_wave(self, event):
 
         # Create advanced visualization (must run in main thread)
         wx.CallAfter(self.create_user_friendly_elliott_wave_display, df, patterns_data, symbol)
+        wx.CallAfter(self.notebook.SetSelection, 1)  # Switch to Chart tab
 
         # Show pattern summary
         composite_patterns = patterns_data.get('composite_patterns', [])
@@ -265,8 +277,9 @@ def handle_analyze_current_position(self, event):
         # Display results
         display_advanced_position_analysis_results(self.output, symbol, position_data, patterns_data)
 
-        # Update plot
+        # Update plot and switch to Chart tab
         update_advanced_position_plot(self, df, position_data, patterns_data, symbol)
+        wx.CallAfter(self.notebook.SetSelection, 1)
 
     except Exception as e:
         self.output.AppendText(f"Error in advanced position analysis: {str(e)}\n")
@@ -276,11 +289,12 @@ def handle_analyze_current_position(self, event):
 
 @run_in_thread
 def handle_scan_all_stocks(self, event):
-    """Scan all stocks for Elliott Wave patterns and populate the listbox"""
+    """Scan all stocks: auto-refresh stale data, then score signals."""
     import traceback
+    from datetime import datetime
+    from src.crawler.yahoo_finance import should_update_file, fetch_stock_data, save_stock_data
 
     try:
-        # Get list of all available stocks
         all_stocks = self.get_stock_list()
 
         if not all_stocks:
@@ -289,113 +303,247 @@ def handle_scan_all_stocks(self, event):
             return
 
         wx.PostEvent(self, UpdateOutputEvent(message=f"\n{'='*70}\n"))
-        wx.PostEvent(self, UpdateOutputEvent(message=f"SCANNING {len(all_stocks)} STOCKS FOR ELLIOTT WAVE PATTERNS\n"))
+        wx.PostEvent(self, UpdateOutputEvent(message=f"SCANNING {len(all_stocks)} STOCKS — SIGNAL ANALYSIS\n"))
         wx.PostEvent(self, UpdateOutputEvent(message=f"{'='*70}\n"))
-        wx.PostEvent(self, UpdateOutputEvent(message=f"Chart Type: {self.chart_type}\n"))
 
-        # Determine candlestick_type from chart_type
         chart_type_map = {
             'Candlestick (Day)': 'day',
             'Candlestick (Week)': 'week',
             'Candlestick (Month)': 'month',
-            'Line': 'day'
+            'Line': 'day',
         }
         candlestick_type = chart_type_map.get(self.chart_type, 'day')
-
-        # Store the scanned timeframe so clicked stocks use the same timeframe
         self.scanned_timeframe = candlestick_type
 
-        # Store results
-        stocks_with_patterns = []
+        # --- Phase 1: Refresh stale data ---
+        stk2_dir = Path(self.config['stk2_dir'])
+        stale_stocks = []
+        for symbol in all_stocks:
+            fp = stk2_dir / f"{symbol}.txt"
+            if should_update_file(fp):
+                stale_stocks.append(symbol)
+
+        refreshed = 0
+        if stale_stocks:
+            wx.PostEvent(self, UpdateOutputEvent(
+                message=f"\nRefreshing {len(stale_stocks)} stocks with stale/missing data...\n"
+            ))
+            # Build suffix map from config files
+            suffix_map = {}
+            try:
+                import pandas as _pd
+                listed_df = _pd.read_excel(self.config['list_file'])
+                for c in listed_df.iloc[:, 0]:
+                    suffix_map[str(c)] = '.TW'
+            except Exception:
+                pass
+            try:
+                import pandas as _pd
+                otc_df = _pd.read_excel(self.config['otclist_file'])
+                for c in otc_df.iloc[:, 0]:
+                    suffix_map[str(c)] = '.TWO'
+            except Exception:
+                pass
+
+            for j, symbol in enumerate(stale_stocks, 1):
+                wx.CallAfter(self.update_progress, j, len(stale_stocks))
+                wx.CallAfter(self.update_status,
+                             f"Fetching {symbol}... [{j}/{len(stale_stocks)}]", 0)
+                try:
+                    suffix = suffix_map.get(symbol, '')
+                    df_raw = fetch_stock_data(
+                        symbol, suffix,
+                        self.config.get('start_date', '2020-01-01'),
+                        self.config.get('end_date', datetime.now().strftime('%Y-%m-%d')),
+                    )
+                    if df_raw is not None and not df_raw.empty:
+                        save_stock_data(df_raw, symbol, folder=stk2_dir)
+                        refreshed += 1
+                except Exception as e:
+                    wx.PostEvent(self, UpdateOutputEvent(
+                        message=f"  Fetch failed for {symbol}: {e}\n"
+                    ))
+
+            wx.PostEvent(self, UpdateOutputEvent(
+                message=f"Refreshed {refreshed}/{len(stale_stocks)} stocks\n\n"
+            ))
+
+        # --- Phase 2: Analyze ---
+        results = []
+        no_data = 0
+        total = len(all_stocks)
 
         for i, symbol in enumerate(all_stocks, 1):
             try:
-                # Load data
+                wx.CallAfter(self.update_progress, i, total)
+                wx.CallAfter(self.update_status, f"Analyzing {symbol}... [{i}/{total}]", 0)
+
                 file_path = os.path.join(self.config['stk2_dir'], f"{symbol}.txt")
                 if not os.path.exists(file_path):
+                    no_data += 1
                     continue
 
                 df = load_and_preprocess_data(file_path)
-                if df is None or len(df) < 50:
+                if df is None or len(df) < 60:
+                    no_data += 1
                     continue
 
-                # Run pattern detection
-                patterns_data = find_elliott_wave_patterns_advanced(
-                    df,
-                    column='close',
-                    candlestick_types=[candlestick_type],
-                    max_patterns_per_timeframe=1,  # Fast scan - only best pattern
-                    pattern_relationships=False  # Skip for speed
-                )
-
-                # Check if patterns found
-                composite_patterns = patterns_data.get('composite_patterns', [])
-                best_pattern = patterns_data.get('best_pattern', {})
-
-                if composite_patterns and 'error' not in best_pattern:
-                    confidence = best_pattern.get('composite_confidence', 0.0)
-                    pattern_group = best_pattern.get('pattern_group', 'unknown')
-
-                    # Only include patterns with reasonable confidence
-                    if confidence >= 0.05:  # Minimum threshold
-                        stocks_with_patterns.append({
-                            'symbol': symbol,
-                            'confidence': confidence,
-                            'pattern_group': pattern_group,
-                            'patterns_count': len(composite_patterns)
-                        })
-
-                        status_icon = '✓' if pattern_group == 'primary' else '~'
-                        wx.PostEvent(self, UpdateOutputEvent(
-                            message=f"[{i}/{len(all_stocks)}] {status_icon} {symbol}: {confidence:.1%} ({pattern_group})\n"
-                        ))
-                else:
+                r = analyze_stock(symbol, df)
+                if r is None:
                     wx.PostEvent(self, UpdateOutputEvent(
-                        message=f"[{i}/{len(all_stocks)}] ✗ {symbol}: No pattern\n"
+                        message=f"[{i}/{total}] - {symbol}: No pattern\n"
                     ))
+                    continue
+
+                action, reason = classify_action(r)
+                r['action'] = action
+                r['reason'] = reason
+
+                results.append(r)
+
+                icon_map = {
+                    'STRONG BUY': '>>',
+                    'BUY': '> ',
+                    'BUY DIP': '> ',
+                    'BUY CORRECTION': '> ',
+                    'WATCH': '~ ',
+                    'EXIT': '! ',
+                    'AVOID': 'x ',
+                    'HOLD': '. ',
+                    'WAIT': '. ',
+                    'SKIP': '  ',
+                }
+                icon = icon_map.get(action, '  ')
+                wx.PostEvent(self, UpdateOutputEvent(
+                    message=f"[{i}/{total}] {icon} {symbol}: {action} (score {r.get('score', 0)}) {reason}\n"
+                ))
 
             except Exception as e:
                 wx.PostEvent(self, UpdateOutputEvent(
-                    message=f"[{i}/{len(all_stocks)}] ✗ {symbol}: Error - {str(e)}\n"
+                    message=f"[{i}/{total}] x {symbol}: Error - {str(e)}\n"
                 ))
                 continue
 
-        # Sort by confidence (highest first)
-        stocks_with_patterns.sort(key=lambda x: x['confidence'], reverse=True)
+        # Apply market regime overlay
+        market_regime, regime_msg, exit_pct = apply_market_regime(results)
+
+        # Sort by score
+        results.sort(key=lambda x: x.get('score', 0), reverse=True)
+
+        # Store scan timestamp
+        scan_time = datetime.now()
+        self._last_scan_time = scan_time
 
         # Save to cache
         try:
             if hasattr(self, 'scan_cache'):
-                success = self.scan_cache.save_scan_results(
-                    stocks_with_patterns,
-                    candlestick_type,
-                    self.chart_type,
-                    len(all_stocks)
+                cache_stocks = [
+                    {
+                        'symbol': r['symbol'],
+                        'conf': r.get('conf', 0),
+                        'pattern_group': 'primary' if r.get('action', '').startswith('BUY') else 'secondary',
+                        'patterns_count': 1,
+                        'score': r.get('score', 0),
+                        'action': r.get('action', ''),
+                        'reason': r.get('reason', ''),
+                        'price': r.get('price', 0),
+                        'wave': r.get('wave', 0),
+                        'trend': r.get('trend', ''),
+                        'rr': r.get('rr', 0),
+                        'stop': r.get('stop', 0),
+                        'target1': r.get('target1', 0),
+                        'target2': r.get('target2', 0),
+                        'rsi': r.get('rsi', 0),
+                        'macd_cross': r.get('macd_cross', ''),
+                        'adx': r.get('adx', 0),
+                        'speed': r.get('speed', ''),
+                        'mom_6m': r.get('mom_6m', 0),
+                        'entry_ok': r.get('entry_ok', False),
+                        'exit_warn': r.get('exit_warn', False),
+                        # Tier 1: Deep momentum
+                        'macd_hist_dir': r.get('macd_hist_dir', ''),
+                        'vel_accel': r.get('vel_accel', ''),
+                        'adx_regime': r.get('adx_regime', ''),
+                        'atr_regime': r.get('atr_regime', ''),
+                        'atr_value': r.get('atr_value', 0),
+                        'price_vs_sma200': r.get('price_vs_sma200', 1.0),
+                        'regime_strategy': r.get('regime_strategy', ''),
+                        'regime_trend_str': r.get('regime_trend_str', ''),
+                        'regime_vol': r.get('regime_vol', ''),
+                        'composite': r.get('composite', 0),
+                        # Tier 2: Volume + personality
+                        'volume_score': r.get('volume_score', 0.5),
+                        'vol_ratio': r.get('vol_ratio', 1.0),
+                        'w3_highest_vol': r.get('w3_highest_vol', False),
+                        'w5_reversal_warn': r.get('w5_reversal_warn', False),
+                        'personality_conf': r.get('personality_conf', 0),
+                        # Tier 3: Position sizing + trailing stop
+                        'trailing_stop': r.get('trailing_stop', 0),
+                        'size_mult': r.get('size_mult', 0),
+                        'size_note': r.get('size_note', ''),
+                    }
+                    for r in results
+                ]
+                self.scan_cache.save_scan_results(
+                    cache_stocks, candlestick_type, self.chart_type, total
                 )
-                if success:
-                    wx.PostEvent(self, UpdateOutputEvent(message="✓ Scan results saved to cache\n"))
         except Exception as e:
-            wx.PostEvent(self, UpdateOutputEvent(message=f"Warning: Could not save cache: {e}\n"))
+            wx.PostEvent(self, UpdateOutputEvent(message=f"Warning: cache save failed: {e}\n"))
 
-        # Update listbox (must be done in main thread)
-        wx.CallAfter(_update_stocks_listbox, self, stocks_with_patterns)
+        # Reset progress
+        wx.CallAfter(self.reset_progress)
+        wx.CallAfter(self.update_status,
+                      f"Scan done — {len(results)} analyzed | Regime: {market_regime}", 0)
 
-        # Summary
+        # Update ListCtrl with signal data
+        wx.CallAfter(_update_stocks_listbox, self, results)
+
+        # Store full results for trade plan panel
+        self._scan_results = {r['symbol']: r for r in results}
+
+        # Build dashboard data
+        buys = [r for r in results if r.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')]
+        watches = [r for r in results if r.get('action') == 'WATCH']
+        exits = [r for r in results if r.get('action') == 'EXIT']
+
+        scan_results_dict = {
+            'results': results,
+            'buys': buys,
+            'watches': watches,
+            'exits': exits,
+            'market_regime': market_regime,
+            'regime_msg': regime_msg,
+            'exit_pct': exit_pct,
+            'total_scanned': total,
+            'no_data': no_data,
+            'scan_time': scan_time.strftime('%Y-%m-%d %H:%M'),
+            'chart_type': self.chart_type,
+            'timeframe': candlestick_type,
+        }
+        wx.CallAfter(self.update_dashboard, scan_results_dict)
+        wx.CallAfter(self.notebook.SetSelection, 0)  # Dashboard
+
+        # Log summary
         wx.PostEvent(self, UpdateOutputEvent(message=f"\n{'='*70}\n"))
         wx.PostEvent(self, UpdateOutputEvent(
-            message=f"SCAN COMPLETE: Found {len(stocks_with_patterns)} stocks with Elliott Wave patterns\n"
+            message=f"SCAN COMPLETE — {scan_time.strftime('%Y-%m-%d %H:%M')}\n"
+        ))
+        wx.PostEvent(self, UpdateOutputEvent(
+            message=f"Regime: {market_regime} | {regime_msg}\n"
+        ))
+        wx.PostEvent(self, UpdateOutputEvent(
+            message=f"Analyzed: {len(results)} | BUY: {len(buys)} | WATCH: {len(watches)} | EXIT: {len(exits)}\n"
         ))
         wx.PostEvent(self, UpdateOutputEvent(message=f"{'='*70}\n"))
 
-        if stocks_with_patterns:
-            wx.PostEvent(self, UpdateOutputEvent(message="\nTop patterns by confidence:\n"))
-            for stock in stocks_with_patterns[:10]:
-                icon = '🟢' if stock['pattern_group'] == 'primary' else '🟡'
+        if buys:
+            wx.PostEvent(self, UpdateOutputEvent(message="\nBUY CANDIDATES:\n"))
+            for r in buys[:10]:
                 wx.PostEvent(self, UpdateOutputEvent(
-                    message=f"  {icon} {stock['symbol']}: {stock['confidence']:.1%}\n"
+                    message=f"  {r['action']:<14s} {r['symbol']:<8s} ${r['price']:<8.2f} "
+                            f"Score:{r.get('score',0):>3d}  R:R {r['rr']:.1f}  {r['reason']}\n"
                 ))
 
-        # Re-enable buttons
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
     except Exception as e:
@@ -404,70 +552,125 @@ def handle_scan_all_stocks(self, event):
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
 
-def _update_stocks_listbox(self, stocks_with_patterns):
-    """Update the stocks listbox with found patterns (main thread)"""
+def _update_stocks_listbox(self, results):
+    """Update the stocks ListCtrl with signal data (main thread).
+
+    Accepts a list of signal result dicts (from analyze_stock + classify_action).
+    Falls back to legacy format (pattern-only dicts) for cache compatibility.
+    """
     try:
-        self.stocks_list.Clear()
-        for stock in stocks_with_patterns:
-            icon = '🟢' if stock['pattern_group'] == 'primary' else '🟡'
-            display_text = f"{stock['symbol']} ({stock['confidence']:.0%}) {icon}"
-            self.stocks_list.Append(display_text)
+        self.stocks_list.DeleteAllItems()
+        self.all_scan_items = []
+
+        # Color map for action types
+        action_colors = {
+            'STRONG BUY': wx.Colour(0, 120, 0),       # Dark green
+            'BUY': wx.Colour(34, 139, 34),             # Forest green
+            'BUY DIP': wx.Colour(60, 160, 60),         # Medium green
+            'BUY CORRECTION': wx.Colour(80, 140, 80),  # Soft green
+            'WATCH': wx.Colour(180, 140, 0),            # Dark yellow
+            'EXIT': wx.Colour(200, 0, 0),               # Red
+            'AVOID': wx.Colour(150, 150, 150),          # Gray
+            'HOLD': wx.Colour(100, 100, 160),           # Blue-gray
+            'WAIT': wx.Colour(120, 120, 120),           # Gray
+            'SKIP': wx.Colour(180, 180, 180),           # Light gray
+        }
+
+        for i, stock in enumerate(results):
+            symbol = str(stock.get('symbol', ''))
+            score = stock.get('score', 0)
+            action = stock.get('action', '')
+            conf = stock.get('conf', stock.get('confidence', 0))
+
+            # Display values
+            score_str = str(score) if score else ''
+            conf_str = f"{conf:.0%}" if isinstance(conf, (int, float)) and conf else ''
+
+            # Shorten action for column width
+            short_action = {
+                'STRONG BUY': 'S.BUY',
+                'BUY CORRECTION': 'BUY.C',
+                'BUY DIP': 'BUY.D',
+            }.get(action, action)
+
+            idx = self.stocks_list.InsertItem(i, symbol)
+            self.stocks_list.SetItem(idx, 1, score_str)
+            self.stocks_list.SetItem(idx, 2, short_action)
+            self.stocks_list.SetItem(idx, 3, conf_str)
+
+            # Color-code the row
+            color = action_colors.get(action)
+            if color:
+                self.stocks_list.SetItemTextColour(idx, color)
+
+            # Bold for BUY actions
+            if action in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'):
+                font = self.stocks_list.GetFont()
+                font = font.Bold()
+                item = self.stocks_list.GetItem(idx)
+                item.SetFont(font)
+                self.stocks_list.SetItem(item)
+
+            self.all_scan_items.append(stock)
+
+        self.update_status(f"{len(results)} stocks analyzed", 2)
     except Exception as e:
-        logger.error(f"Error updating listbox: {e}")
+        logger.error(f"Error updating stocks list: {e}")
 
 
 def handle_load_scan(self, event):
-    """Load previously cached scan results"""
+    """Load previously cached scan results."""
     try:
         if not hasattr(self, 'scan_cache'):
             self.output.AppendText("Error: Scan cache not initialized\n")
             return
 
-        # Load cache
         cache_data = self.scan_cache.load_scan_results()
-
         if not cache_data:
-            self.output.AppendText("No cached scan results found.\n")
-            self.output.AppendText("Run 'Scan All Stocks' first to create cache.\n")
+            self.output.AppendText("No cached scan results found.\nRun 'Scan All Stocks' first.\n")
             return
 
-        # Extract data
-        stocks_with_patterns = cache_data['stocks']
+        stocks = cache_data['stocks']
         timeframe = cache_data['timeframe']
         chart_type = cache_data['chart_type']
-        timestamp = cache_data['timestamp']
+        timestamp = cache_data.get('timestamp', 'Unknown')
         total_scanned = cache_data.get('total_scanned', 0)
 
-        # Restore scanned timeframe
         self.scanned_timeframe = timeframe
 
-        # Update listbox
-        wx.CallAfter(_update_stocks_listbox, self, stocks_with_patterns)
+        # Restore _scan_results lookup for trade plan
+        self._scan_results = {s['symbol']: s for s in stocks if 'symbol' in s}
 
-        # Display info
-        self.output.AppendText(f"\n{'='*70}\n")
-        self.output.AppendText(f"LOADED CACHED SCAN RESULTS\n")
-        self.output.AppendText(f"{'='*70}\n")
-        self.output.AppendText(f"Cached: {cache_data.get('timestamp', 'Unknown')}\n")
-        self.output.AppendText(f"Chart Type: {chart_type}\n")
-        self.output.AppendText(f"Timeframe: {timeframe}\n")
-        self.output.AppendText(f"Total scanned: {total_scanned}\n")
-        self.output.AppendText(f"Patterns found: {len(stocks_with_patterns)}\n")
-        self.output.AppendText(f"{'='*70}\n")
+        wx.CallAfter(_update_stocks_listbox, self, stocks)
 
-        if stocks_with_patterns:
-            self.output.AppendText("\nTop patterns by confidence:\n")
-            for stock in stocks_with_patterns[:10]:
-                icon = '🟢' if stock['pattern_group'] == 'primary' else '🟡'
-                self.output.AppendText(f"  {icon} {stock['symbol']}: {stock['confidence']:.1%}\n")
+        # Build dashboard-compatible dict
+        buys = [s for s in stocks if s.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')]
+        watches = [s for s in stocks if s.get('action') == 'WATCH']
+        exits = [s for s in stocks if s.get('action') == 'EXIT']
 
-        self.output.AppendText(f"\n✓ Loaded {len(stocks_with_patterns)} stocks from cache\n")
-        self.output.AppendText(f"Click any stock to view its pattern\n")
+        scan_results_dict = {
+            'results': stocks,
+            'buys': buys,
+            'watches': watches,
+            'exits': exits,
+            'market_regime': 'UNKNOWN',
+            'regime_msg': f'Loaded from cache ({timestamp})',
+            'exit_pct': 0,
+            'total_scanned': total_scanned,
+            'no_data': 0,
+            'scan_time': timestamp,
+            'chart_type': chart_type,
+            'timeframe': timeframe,
+        }
+        wx.CallAfter(self.update_dashboard, scan_results_dict)
+        wx.CallAfter(self.notebook.SetSelection, 0)
+
+        self.output.AppendText(f"\nLoaded {len(stocks)} results from cache ({timestamp})\n")
+        self.output.AppendText("Click any stock to view its chart and trade plan.\n")
 
     except Exception as e:
         import traceback
-        self.output.AppendText(f"Error loading cache: {e}\n")
-        self.output.AppendText(f"{traceback.format_exc()}\n")
+        self.output.AppendText(f"Error loading cache: {e}\n{traceback.format_exc()}\n")
 
 
 def handle_chart_type_change(self, event):
@@ -797,51 +1000,53 @@ def plot_pattern_statistics(ax, patterns_data: Dict[str, Any]):
     ax.grid(True, alpha=0.3)
 
 
-def update_advanced_position_plot(self, df: pd.DataFrame, 
-                                position_data: Dict[str, Any], 
-                                patterns_data: Dict[str, Any], 
+def update_advanced_position_plot(self, df: pd.DataFrame,
+                                position_data: Dict[str, Any],
+                                patterns_data: Dict[str, Any],
                                 symbol: str):
     """Update plot with advanced position analysis"""
     try:
-        # Clear the canvas
+        # Clear the canvas and fit to panel
         self.canvas.figure.clf()
-        
-        # Create subplot layout
         fig = self.canvas.figure
+
+        # Fit figure to canvas panel size
+        if hasattr(self, '_fit_figure_to_canvas'):
+            w, h = self._get_canvas_figsize()
+            fig.set_size_inches(w, h)
+
         gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
-        
+
         # Main chart with position
         ax_main = fig.add_subplot(gs[0])
-        
-        # Plot price and patterns
+
         plot_multiple_elliott_patterns_advanced(
             df, patterns_data, column='close',
             title=f"{symbol} - Current Position Analysis",
             ax=ax_main, show_relationships=True, show_hierarchy=False
         )
-        
+
         # Add position annotation
         position = position_data.get('position', 'unknown')
         confidence = position_data.get('confidence', 0.0)
-        
-        # Find current price position
         current_price = df['close'].iloc[-1]
         current_date = df.index[-1]
-        
+
         ax_main.annotate(f"Position: {position.replace('_', ' ').title()}\nConfidence: {confidence:.1%}",
                         xy=(current_date, current_price),
                         xytext=(10, 10), textcoords='offset points',
-                        fontsize=12, fontweight='bold',
-                        bbox=dict(boxstyle="round,pad=0.5", facecolor='yellow', alpha=0.8),
+                        fontsize=10, fontweight='bold',
+                        bbox=dict(boxstyle="round,pad=0.4", facecolor='yellow', alpha=0.8),
                         arrowprops=dict(arrowstyle='->', color='black'))
-        
+
         # Position timeline subplot
         ax_timeline = fig.add_subplot(gs[1])
         plot_position_timeline(ax_timeline, patterns_data, position_data)
-        
-        fig.tight_layout()
-        self.canvas.draw()
-        
+
+        fig.tight_layout(pad=1.5)
+        self.canvas.SetSize(self.chart_panel.GetClientSize())
+        self.canvas.draw_idle()
+
     except Exception as e:
         self.output.AppendText(f"Error in advanced position plot: {e}\n")
         import traceback
@@ -912,16 +1117,16 @@ def _plot_candlestick_elliott_wave_enhanced(self, df, wave_data, symbol):
         title=f"Elliott Wave Analysis for {symbol}", ax=self.ax
     )
     self._fix_date_labels(self.ax, df)
-    self.canvas.draw()
+    self._fit_figure_to_canvas()
 
 
 def _plot_line_elliott_wave_enhanced(self, df: pd.DataFrame, wave_data: Dict[str, Any], symbol: str):
     """Enhanced line plotting for Elliott Wave analysis."""
     self.ax.clear()
-    plot_elliott_wave_analysis_enhanced(df, wave_data, column='close', 
+    plot_elliott_wave_analysis_enhanced(df, wave_data, column='close',
                                       title=f"Elliott Wave Analysis for {symbol}", ax=self.ax)
     self._fix_date_labels(self.ax, df)
-    self.canvas.draw()
+    self._fit_figure_to_canvas()
 
 
 # ============================================================================
@@ -1016,12 +1221,10 @@ def _plot_candlestick_elliott_wave_multiple(self, df, wave_data, symbol):
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
         plt.xticks(rotation=45)
-        
-        plt.tight_layout()
-        
+
         # Update canvas
-        self.canvas.draw()
-        
+        self._fit_figure_to_canvas()
+
     except Exception as e:
         self.output.AppendText(f"Error in multiple pattern candlestick plot: {e}\n")
         import traceback
@@ -1072,11 +1275,10 @@ def _plot_line_elliott_wave_multiple(self, df, wave_data, symbol):
         ax.grid(True, alpha=0.3)
         
         plt.xticks(rotation=45)
-        plt.tight_layout()
-        
+
         # Update canvas
-        self.canvas.draw()
-        
+        self._fit_figure_to_canvas()
+
     except Exception as e:
         self.output.AppendText(f"Error in multiple pattern line plot: {e}\n")
         import traceback

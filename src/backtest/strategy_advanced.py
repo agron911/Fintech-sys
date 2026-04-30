@@ -6,6 +6,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import logging
+from src.utils.wave_aware_sizing import WaveAwarePositionSizer, WavePositionMetrics
+from src.analysis.core.momentum_indicators import compute_atr
 
 logger = logging.getLogger(__name__)
 
@@ -189,12 +191,27 @@ class MultiTimeframeAlignmentStrategy:
         # Need at least 20 bars of history for volume average
         start_bar = 20
 
+        # Precompute per-bar indicators for momentum/confirmation gates
+        close_series = df['close']
+        delta = close_series.diff()
+        gain = delta.clip(lower=0).ewm(span=14, min_periods=14).mean()
+        loss = (-delta.clip(upper=0)).ewm(span=14, min_periods=14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi_series = 100 - (100 / (1 + rs))
+
+        # MACD for confirmation gate
+        ema12 = close_series.ewm(span=12, min_periods=12).mean()
+        ema26 = close_series.ewm(span=26, min_periods=26).mean()
+        macd_line = ema12 - ema26
+        macd_signal = macd_line.ewm(span=9, min_periods=9).mean()
+        macd_hist = macd_line - macd_signal
+
+        vol_col = 'volume' if 'volume' in df.columns else 'Volume'
+
         for i in range(start_bar, len(df)):
             date = df.index[i]
             price = df['close'].iloc[i]
 
-            # Get volume safely
-            vol_col = 'volume' if 'volume' in df.columns else 'Volume'
             if vol_col not in df.columns:
                 continue
             volume = df[vol_col].iloc[i]
@@ -208,10 +225,11 @@ class MultiTimeframeAlignmentStrategy:
 
                 wave_num = wave_pos.get('wave_number', 0) if wave_pos else 0
 
-                # --- Momentum gate: skip entries when momentum is hostile ---
-                momentum = pattern_analysis.get('momentum', {})
-                momentum_entry_ok = momentum.get('entry_ok', True)
-                stop_mult = momentum.get('stop_multiplier', 1.0)
+                # --- Per-bar momentum gate using RSI ---
+                bar_rsi = rsi_series.iloc[i] if i < len(rsi_series) and not np.isnan(rsi_series.iloc[i]) else 50
+                momentum_entry_ok = bar_rsi < 75  # Don't enter when overbought
+                momentum_exit_warn = bar_rsi > 80  # Exit warning when very overbought
+                stop_mult = 1.0 + max(0, (bar_rsi - 60)) * 0.01  # Widen stop in hot RSI
 
                 # --- BUY signals: Wave 1 and Wave 3 entries (trend-aligned only) ---
                 if wave_num in [1, 3] and buy_allowed:
@@ -235,6 +253,20 @@ class MultiTimeframeAlignmentStrategy:
                             # Widen stop in volatile regimes, tighten in calm
                             stop_loss = price - (price - base_stop) * stop_mult
 
+                            base_conf = self._calculate_confidence(alignment, wave_pos, volume, avg_volume)
+
+                            # P3.1: MACD confirmation gate
+                            # MACD histogram turning positive = momentum confirming entry
+                            if i < len(macd_hist) and not np.isnan(macd_hist.iloc[i]):
+                                if macd_hist.iloc[i] > 0:
+                                    base_conf = min(1.0, base_conf + 0.10)
+                                elif macd_hist.iloc[i] < 0 and i > 0 and macd_hist.iloc[i] > macd_hist.iloc[i-1]:
+                                    base_conf = min(1.0, base_conf + 0.05)  # Turning up
+
+                            # P3.1: RSI divergence penalty at overbought
+                            if bar_rsi > 65:
+                                base_conf -= 0.05
+
                             signal = {
                                 'date': date,
                                 'type': 'BUY',
@@ -242,7 +274,7 @@ class MultiTimeframeAlignmentStrategy:
                                 'stop_loss': stop_loss,
                                 'wave_number': wave_pos['wave_number'],
                                 'alignment': alignment,
-                                'confidence': self._calculate_confidence(alignment, wave_pos, volume, avg_volume)
+                                'confidence': base_conf,
                             }
 
                             # PHASE 1 GATE 2: Validate signal before adding
@@ -255,21 +287,23 @@ class MultiTimeframeAlignmentStrategy:
                             else:
                                 signals.append(signal)
 
-                # --- MOMENTUM EXIT: Any wave, if momentum crashes ---
-                elif momentum.get('exit_warning', False) and wave_num >= 3:
-                    vel = momentum.get('velocity', {})
-                    speed = vel.get('speed_regime', 'flat')
-                    if speed in ('crash', 'fast_down'):
-                        signals.append({
-                            'date': date,
-                            'type': 'SELL',
-                            'price': price,
-                            'stop_loss': price * 1.03,
-                            'wave_number': wave_num,
-                            'alignment': alignment,
-                            'confidence': 0.8,
-                            'sell_reason': 'momentum_crash',
-                        })
+                # --- MOMENTUM EXIT: Any wave, if RSI collapses from overbought ---
+                elif momentum_exit_warn and wave_num >= 3:
+                    # Check for rapid RSI decline (momentum crash)
+                    if i >= 5:
+                        rsi_5_ago = rsi_series.iloc[i - 5] if not np.isnan(rsi_series.iloc[i - 5]) else 50
+                        rsi_drop = rsi_5_ago - bar_rsi
+                        if rsi_drop > 15:  # RSI dropped >15 pts in 5 bars
+                            signals.append({
+                                'date': date,
+                                'type': 'SELL',
+                                'price': price,
+                                'stop_loss': price * 1.03,
+                                'wave_number': wave_num,
+                                'alignment': alignment,
+                                'confidence': 0.8,
+                                'sell_reason': 'momentum_crash',
+                            })
 
                 # --- Wave 5/6: SELL exits or correction-bottom BUY ---
                 elif wave_num in [5, 6]:
@@ -340,8 +374,24 @@ class MultiTimeframeAlignmentStrategy:
                             if w5_progress >= 1.0:
                                 exhaustion_signals += 1
 
+                        # P3.1: RSI bearish divergence at Wave 5
+                        # Price making new high but RSI declining → strong exit
+                        if i >= 14:
+                            price_14_ago = df['close'].iloc[i - 14]
+                            rsi_14_ago = rsi_series.iloc[i - 14] if not np.isnan(rsi_series.iloc[i - 14]) else 50
+                            if price > price_14_ago and bar_rsi < rsi_14_ago - 5:
+                                exhaustion_signals += 2  # Double weight for divergence
+
+                        # P3.1: MACD histogram declining while price rising
+                        if i >= 5 and i < len(macd_hist):
+                            if (not np.isnan(macd_hist.iloc[i]) and
+                                    not np.isnan(macd_hist.iloc[i-5]) and
+                                    macd_hist.iloc[i] < macd_hist.iloc[i-5] and
+                                    price > df['close'].iloc[i-5]):
+                                exhaustion_signals += 1
+
                         if exhaustion_signals >= 2:
-                            sell_confidence = min(0.4 + exhaustion_signals * 0.1, 0.8)
+                            sell_confidence = min(0.4 + exhaustion_signals * 0.1, 0.9)
                             sell_reason = 'wave5_exhaustion'
 
                     if sell_confidence > 0.3:
@@ -791,12 +841,21 @@ class AdvancedBacktester:
             risk_per_trade=self.config.get('risk_per_trade', 0.02)
         )
 
-        # Transaction cost model (default: US market, low friction)
-        self.cost_model = TransactionCostModel(
-            commission_rate=self.config.get('commission_rate', 0.001),
-            sell_tax_rate=self.config.get('sell_tax_rate', 0.0),
-            slippage_rate=self.config.get('slippage_rate', 0.0005),
+        # Wave-aware position sizer (adjusts size by wave number + confidence)
+        self.wave_sizer = WaveAwarePositionSizer(
+            initial_capital,
+            max_risk_per_trade=self.config.get('risk_per_trade', 0.02)
         )
+
+        # Transaction cost model (default: Taiwan TWSE)
+        self.cost_model = TransactionCostModel(
+            commission_rate=self.config.get('commission_rate', 0.001425),
+            sell_tax_rate=self.config.get('sell_tax_rate', 0.003),
+            slippage_rate=self.config.get('slippage_rate', 0.001),
+        )
+
+        # Portfolio drawdown tracking
+        self.peak_capital = initial_capital
         self.total_costs = 0.0
 
         # Initialize strategies
@@ -824,12 +883,14 @@ class AdvancedBacktester:
         Returns:
             Dictionary of backtest results
         """
-        strategy = self.strategies.get(strategy_name)
-        if not strategy:
-            raise ValueError(f"Unknown strategy: {strategy_name}")
+        if strategy_name == 'ensemble':
+            signals = self._ensemble_signals(df, pattern_analysis)
+        else:
+            strategy = self.strategies.get(strategy_name)
+            if not strategy:
+                raise ValueError(f"Unknown strategy: {strategy_name}")
+            signals = strategy.generate_signals(df, pattern_analysis)
 
-        # Generate all signals
-        signals = strategy.generate_signals(df, pattern_analysis)
         logger.info(f"Generated {len(signals)} signals for {strategy_name}")
 
         # Simulate trading
@@ -864,12 +925,35 @@ class AdvancedBacktester:
                         except (KeyError, TypeError):
                             pass
 
+                    # Portfolio drawdown circuit breaker
+                    self.peak_capital = max(self.peak_capital, current_capital)
+                    portfolio_dd = 1.0 - (current_capital / self.peak_capital) if self.peak_capital > 0 else 0
+                    if portfolio_dd >= 0.15:
+                        continue  # Hard halt: no new entries in severe drawdown
+
                     if self.risk_manager.can_open_position():
-                        # Calculate position size
-                        shares = self.position_manager.calculate_position_size(
-                            signal['price'],
-                            signal['stop_loss']
+                        # Wave-aware position sizing
+                        wave_metrics = WavePositionMetrics(
+                            wave_number=signal.get('wave_number', 3),
+                            wave_type='impulse',
+                            confidence=signal.get('confidence', 0.5),
+                            is_diagonal=False,
+                            complex_correction=False,
+                            timeframe_alignment=signal.get('alignment', 0.5),
+                            fibonacci_confluence=3,
                         )
+
+                        # Half risk when in moderate drawdown (10-15%)
+                        if portfolio_dd >= 0.10:
+                            wave_metrics.confidence *= 0.5
+
+                        shares = self.wave_sizer.calculate_wave_adjusted_size(
+                            signal['price'], signal['stop_loss'], wave_metrics
+                        )
+                        if shares < 1:
+                            shares = self.position_manager.calculate_position_size(
+                                signal['price'], signal['stop_loss']
+                            )
 
                         # Open position
                         position_value = shares * signal['price']
@@ -915,8 +999,13 @@ class AdvancedBacktester:
         return self._calculate_statistics()
 
     def _check_exits(self, df: pd.DataFrame, current_date, current_capital: float) -> float:
-        """Check for exit conditions on open positions using wave-aware logic."""
+        """Check for exit conditions on open positions using ATR-adaptive trailing stops."""
         positions_to_close = []
+        partial_exits = []  # (entry_date, price, shares_to_close, reason)
+
+        # Precompute ATR for the current date
+        atr_series = compute_atr(df, period=14)
+        current_atr = atr_series.loc[current_date] if current_date in atr_series.index else None
 
         for entry_date, position in self.open_positions.items():
             if current_date not in df.index:
@@ -933,7 +1022,7 @@ class AdvancedBacktester:
                 positions_to_close.append((entry_date, current_price, 'stop_loss'))
                 continue
 
-            # 2. Update trailing stop if position is in profit
+            # 2. ATR-adaptive trailing stop
             entry_price = position['entry_price']
             risk_per_share = abs(entry_price - position['stop_loss'])
             profit_per_share = current_price - entry_price
@@ -943,30 +1032,66 @@ class AdvancedBacktester:
                 position['highest_price'] = entry_price
             position['highest_price'] = max(position['highest_price'], current_price)
 
+            # Count bars held for time-based tightening
+            if 'bars_held' not in position:
+                position['bars_held'] = 0
+            position['bars_held'] += 1
+
             # Activate trailing stop after reaching 1R profit
             if risk_per_share > 0 and profit_per_share >= risk_per_share:
-                # Trail at 2x the risk distance below highest price
-                trail_distance = risk_per_share * 2.0
+                # Determine ATR-based trail distance
+                if current_atr is not None and current_atr > 0 and current_price > 0:
+                    atr_pct = current_atr / current_price
+                    wave_num = position.get('wave_number', 0)
+
+                    # Volatility regime determines ATR multiplier
+                    if atr_pct < 0.01:      # Calm market
+                        atr_mult = 1.5
+                    elif atr_pct < 0.03:    # Normal volatility
+                        atr_mult = 2.5
+                    else:                    # Volatile market
+                        atr_mult = 3.5
+
+                    # Wave 5 uses tighter trail (exhaustion risk)
+                    if wave_num == 5:
+                        atr_mult *= 0.7
+
+                    trail_distance = current_atr * atr_mult
+
+                    # Time-based tightening: after 40 bars, tighten by 20%
+                    if position['bars_held'] > 40:
+                        trail_distance *= 0.8
+                else:
+                    # Fallback: risk-based trail when ATR unavailable
+                    trail_distance = risk_per_share * 2.0
+
                 trailing_stop = position['highest_price'] - trail_distance
 
                 # Move stop up (never down)
                 if trailing_stop > position['stop_loss']:
                     position['stop_loss'] = trailing_stop
 
-                # Also move to breakeven after 1.5R profit
+                # Also move to breakeven after 1.5R profit (1.007 covers TW round-trip costs ~0.685%)
                 if profit_per_share >= risk_per_share * 1.5:
-                    position['stop_loss'] = max(position['stop_loss'], entry_price * 1.005)
+                    position['stop_loss'] = max(position['stop_loss'], entry_price * 1.007)
 
-            # 3. Wave-based profit targets
-            wave_num = position.get('wave_number', 0)
+            # 3. Partial profit-taking at first Fibonacci target
             targets = position.get('targets', [])
+            wave_num = position.get('wave_number', 0)
 
+            if targets and not position.get('partial_taken', False):
+                first_target = min(targets)
+                if current_price >= first_target and position['shares'] > 1:
+                    # Close 50% at first target, let the rest ride with trailing stop
+                    shares_to_close = position['shares'] // 2
+                    partial_exits.append((entry_date, current_price, shares_to_close, f'partial_{first_target:.2f}'))
+                    position['partial_taken'] = True
+
+            # 4. Full exit at highest target
             if targets:
-                # Check if highest exceeded target is reached (sort descending)
-                for target in sorted(targets, reverse=True):
-                    if current_price >= target:
-                        positions_to_close.append((entry_date, current_price, f'target_{target:.2f}'))
-                        break
+                highest_target = max(targets)
+                if current_price >= highest_target:
+                    positions_to_close.append((entry_date, current_price, f'target_{highest_target:.2f}'))
             else:
                 # Fallback: wave-aware profit targets
                 profit_pct = profit_per_share / entry_price if entry_price > 0 else 0
@@ -984,9 +1109,56 @@ class AdvancedBacktester:
                     if profit_pct >= 0.12:
                         positions_to_close.append((entry_date, current_price, 'profit_target'))
 
-        # Close positions, propagating updated capital
+        # Execute partial exits first (reduce share count, book partial profit)
+        for entry_date, exit_price, shares_to_close, reason in partial_exits:
+            if entry_date in self.open_positions:
+                current_capital = self._partial_close(
+                    entry_date, current_date, exit_price, shares_to_close, reason, current_capital
+                )
+
+        # Close full positions, propagating updated capital
         for entry_date, exit_price, reason in positions_to_close:
             current_capital = self._close_position(entry_date, current_date, exit_price, reason, current_capital)
+        return current_capital
+
+    def _partial_close(self, entry_date, exit_date, exit_price: float,
+                       shares_to_close: int, reason: str, current_capital: float) -> float:
+        """Close part of a position and record the partial trade. Returns updated capital."""
+        position = self.open_positions[entry_date]
+        if shares_to_close >= position['shares']:
+            return self._close_position(entry_date, exit_date, exit_price, reason, current_capital)
+
+        sell_cost = self.cost_model.sell_cost(exit_price, shares_to_close)
+        self.total_costs += sell_cost
+        buy_cost_partial = self.cost_model.buy_cost(position['entry_price'], shares_to_close)
+        profit = (exit_price - position['entry_price']) * shares_to_close - buy_cost_partial - sell_cost
+
+        risk_per_share = abs(position['entry_price'] - position['stop_loss'])
+        r_multiple = profit / (risk_per_share * shares_to_close) if risk_per_share > 0 else 0.0
+
+        trade = {
+            'entry_date': entry_date,
+            'exit_date': exit_date,
+            'entry_price': position['entry_price'],
+            'exit_price': exit_price,
+            'shares': shares_to_close,
+            'profit': profit,
+            'profit_pct': profit / (position['entry_price'] * shares_to_close) * 100,
+            'exit_reason': reason,
+            'wave_number': position.get('wave_number'),
+            'confidence': position.get('confidence'),
+            'r_multiple': r_multiple,
+        }
+        self.trades.append(trade)
+
+        # Reduce remaining shares
+        position['shares'] -= shares_to_close
+        current_capital += exit_price * shares_to_close - sell_cost
+
+        # Move stop to breakeven on remaining shares after partial profit taken
+        position['stop_loss'] = max(position['stop_loss'], position['entry_price'] * 1.007)
+
+        logger.info(f"Partial close: {shares_to_close} shares @ ${exit_price:.2f} - P/L: ${profit:.2f} ({reason})")
         return current_capital
 
     def _close_position(self, entry_date, exit_date, exit_price: float,
@@ -1153,6 +1325,7 @@ class AdvancedBacktester:
         stats['max_drawdown_pct'] = max_dd * 100
         stats['max_drawdown'] = max_dd
         stats['sharpe_ratio'] = self._calculate_sharpe(trades_df)
+        stats['sortino_ratio'] = self._calculate_sortino(trades_df)
         stats['total_costs'] = self.total_costs
         stats['trades'] = self.trades
 
@@ -1202,6 +1375,34 @@ class AdvancedBacktester:
         sharpe = (avg_return - risk_free_rate / trades_per_year) / std_return * np.sqrt(trades_per_year)
         return sharpe
 
+    def _calculate_sortino(self, trades_df: pd.DataFrame, risk_free_rate: float = 0.02) -> float:
+        """Calculate Sortino ratio (penalizes only downside volatility)."""
+        if len(trades_df) < 2:
+            return 0
+
+        returns = trades_df['profit_pct'] / 100
+
+        # Estimate trades per year
+        if 'entry_date' in trades_df.columns:
+            try:
+                entry_dates = pd.to_datetime(trades_df['entry_date'])
+                total_days = (entry_dates.max() - entry_dates.min()).days
+                trades_per_year = len(trades_df) / (total_days / 252) if total_days > 0 else 30
+            except Exception:
+                trades_per_year = 30
+        else:
+            trades_per_year = 30
+        trades_per_year = max(trades_per_year, 1)
+
+        avg_return = returns.mean()
+        downside = returns[returns < 0]
+        downside_std = downside.std() if len(downside) > 1 else returns.std()
+
+        if downside_std == 0:
+            return 0
+
+        return (avg_return - risk_free_rate / trades_per_year) / downside_std * np.sqrt(trades_per_year)
+
     def get_trades_dataframe(self) -> pd.DataFrame:
         """Return trades as DataFrame for analysis."""
         return pd.DataFrame(self.trades)
@@ -1232,7 +1433,66 @@ class AdvancedBacktester:
         logger.info(f"Worst Trade:            ${stats['worst_trade']:.2f}")
         logger.info(f"Max Drawdown:           {stats['max_drawdown_pct']:.2f}%")
         logger.info(f"Sharpe Ratio:           {stats['sharpe_ratio']:.2f}")
+        logger.info(f"Sortino Ratio:          {stats.get('sortino_ratio', 0):.2f}")
         logger.info("-"*60)
         logger.info(f"Max Consecutive Wins:   {stats['max_consecutive_wins']}")
         logger.info(f"Max Consecutive Losses: {stats['max_consecutive_losses']}")
         logger.info("="*60 + "\n")
+
+    def _ensemble_signals(self, df: pd.DataFrame, pattern_analysis: Dict) -> List[Dict]:
+        """
+        P3.3: Multi-strategy ensemble — run all strategies, keep signals where 2+ agree.
+
+        Combines signals from all 3 strategies. For each date, if 2+ strategies
+        produce a BUY signal, emit a merged signal with averaged confidence.
+        SELL signals pass through if any strategy emits them.
+        """
+        all_signals = {}  # strategy_name -> signals list
+        for name, strategy in self.strategies.items():
+            all_signals[name] = strategy.generate_signals(df, pattern_analysis)
+
+        # Build per-date signal maps
+        date_buys = {}   # date -> list of (strategy_name, signal)
+        date_sells = {}  # date -> list of (strategy_name, signal)
+
+        for name, signals in all_signals.items():
+            for sig in signals:
+                d = sig['date']
+                if sig['type'] == 'BUY':
+                    date_buys.setdefault(d, []).append((name, sig))
+                elif sig['type'] == 'SELL':
+                    date_sells.setdefault(d, []).append((name, sig))
+
+        merged = []
+
+        # BUY: require 2+ strategies to agree on the same date
+        for date, entries in sorted(date_buys.items()):
+            if len(entries) >= 2:
+                # Average the signal properties
+                avg_price = np.mean([s['price'] for _, s in entries])
+                avg_stop = np.mean([s['stop_loss'] for _, s in entries])
+                avg_conf = np.mean([s.get('confidence', 0.5) for _, s in entries])
+                # Use highest alignment and wave number from primary strategy
+                best = max(entries, key=lambda x: x[1].get('confidence', 0))
+                merged.append({
+                    'date': date,
+                    'type': 'BUY',
+                    'price': avg_price,
+                    'stop_loss': avg_stop,
+                    'wave_number': best[1].get('wave_number', 3),
+                    'alignment': best[1].get('alignment', 0.5),
+                    'confidence': min(avg_conf + 0.1, 1.0),  # Consensus bonus
+                    'ensemble_count': len(entries),
+                })
+
+        # SELL: pass through any sell signal (no consensus needed for risk management)
+        for date, entries in sorted(date_sells.items()):
+            best = max(entries, key=lambda x: x[1].get('confidence', 0))
+            sig = dict(best[1])
+            merged.append(sig)
+
+        # Sort by date
+        merged.sort(key=lambda x: x['date'])
+        logger.info(f"Ensemble: {sum(1 for s in merged if s['type']=='BUY')} BUY, "
+                     f"{sum(1 for s in merged if s['type']=='SELL')} SELL signals")
+        return merged

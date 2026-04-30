@@ -39,16 +39,16 @@ def test_validate_wave_4_overlap_no_overlap():
     wave_points = np.array([0, 1, 2, 3, 4])
     result = elliott_wave.validate_wave_4_overlap(df, wave_points)
     assert result['valid']
-    assert result['reason'] == 'no_overlap_clean_impulse'
+    assert result['reason'] == 'no_overlap'
 
 def test_validate_wave_4_overlap_with_overlap():
     df = make_simple_df()
     # Force overlap: wave_4_end inside wave_1 territory
     wave_points = np.array([0, 1, 2, 3, 1])
-    result = elliott_wave.validate_wave_4_overlap(df, wave_points)
+    result = elliott_wave.validate_wave_4_overlap(df, wave_points, allow_overlap=False)
     assert 'has_overlap' in result
     assert result['has_overlap']
-    assert not result['valid'] or result['is_diagonal']
+    assert not result['valid']
 
 def test_validate_diagonal_triangle_insufficient():
     df = make_simple_df()

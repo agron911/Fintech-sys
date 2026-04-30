@@ -58,8 +58,9 @@ def compute_atr_adaptive(df: pd.DataFrame, window: int = 14) -> pd.Series:
             
         atr = true_range.rolling(window=window, min_periods=1).mean()
         return atr.fillna(atr.mean())
-    except Exception:
+    except Exception as e:
         # Ultimate fallback
+        logger.warning(f"ATR computation failed, using std fallback: {e}")
         return df['close'].rolling(window=window).std()
 
 def compute_local_volatility(price_series: pd.Series, window: int = 20) -> pd.Series:
@@ -218,7 +219,8 @@ def adaptive_prominence_calculation(df: pd.DataFrame, atr: pd.Series,
         
         return np.clip(adaptive_prominence, min_prominence, max_prominence)
     
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Adaptive prominence calculation failed, using default: {e}")
         return df['close'].iloc[-1] * base_prominence_pct
 
 def multi_scale_detection(df: pd.DataFrame, column: str = 'close') -> Tuple[np.ndarray, np.ndarray]:
@@ -264,8 +266,8 @@ def multi_scale_detection(df: pd.DataFrame, column: str = 'close') -> Tuple[np.n
 
         all_peaks.extend(peaks_scipy)
         all_troughs.extend(troughs_scipy)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Scipy peak detection failed, skipping: {e}")
 
     # PERFORMANCE OPTIMIZATION: Use only ONE order instead of 3
     # Method 3: Relative extrema with optimal order
@@ -276,8 +278,8 @@ def multi_scale_detection(df: pd.DataFrame, column: str = 'close') -> Tuple[np.n
 
         all_peaks.extend(peaks_rel)
         all_troughs.extend(troughs_rel)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Relative extrema detection failed, skipping: {e}")
 
     # Remove duplicates and sort
     unique_peaks = np.unique(all_peaks)

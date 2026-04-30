@@ -21,6 +21,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import argparse
+import json
 import warnings
 warnings.filterwarnings('ignore')
 import logging
@@ -32,29 +33,48 @@ from pathlib import Path
 from datetime import datetime
 
 from src.utils.config import load_config
-from src.analysis.core.peaks import detect_peaks_troughs_enhanced
-from src.analysis.core.impulse import find_best_impulse_wave
-from src.backtest.pattern_adapter import adapt_wave_data_to_strategy_input
+from src.analysis.core.signal_scoring import (
+    analyze_stock as analyze,
+    classify_action,
+    apply_market_regime,
+    SCORING_CONFIG,
+)
+from src.crawler.yahoo_finance import fetch_stock_data, save_stock_data
 
-# Extended universe of liquid US stocks across sectors
+# Extended universe of liquid US stocks across sectors (~180 stocks)
 EXPANDED_UNIVERSE = [
-    # Tech
+    # Mega-cap Tech
     'AAPL', 'MSFT', 'GOOG', 'META', 'AMZN', 'NFLX', 'CRM', 'ADBE', 'INTC', 'QCOM',
     'AVGO', 'MU', 'MRVL', 'ANET', 'PANW', 'CRWD', 'SNOW', 'DDOG', 'ZS', 'NET',
+    'ORCL', 'CSCO', 'IBM', 'NOW', 'ADSK', 'FTNT', 'ESTC', 'DELL', 'HPE',
     # Semiconductors
-    'ASML', 'LRCX', 'KLAC', 'MCHP', 'ON', 'SWKS', 'TXN',
+    'ASML', 'LRCX', 'KLAC', 'MCHP', 'ON', 'SWKS', 'TXN', 'ADI', 'AMAT', 'TSM', 'SMCI',
+    # AI / Quantum / Emerging Tech
+    'PLTR', 'APP', 'IONQ', 'SOUN', 'TTD', 'RKLB', 'U', 'ROKU', 'SNAP',
     # Finance
-    'JPM', 'BAC', 'GS', 'MS', 'V', 'MA', 'PYPL', 'SQ', 'COIN',
-    # Healthcare
-    'UNH', 'JNJ', 'LLY', 'PFE', 'ABBV', 'MRK', 'BMY', 'GILD',
+    'JPM', 'BAC', 'GS', 'MS', 'V', 'MA', 'PYPL', 'SQ', 'COIN', 'BLK', 'BX',
+    'SCHW', 'AXP', 'BK', 'ICE', 'WFC', 'HOOD', 'SOFI', 'AFRM', 'MARA',
+    # Healthcare / Biotech
+    'UNH', 'JNJ', 'LLY', 'PFE', 'ABBV', 'MRK', 'BMY', 'GILD', 'AMGN', 'REGN',
+    'ISRG', 'DHR', 'MDT', 'VRTX', 'HIMS', 'NVO', 'TMO',
     # Energy
-    'XOM', 'CVX', 'COP', 'SLB', 'OXY',
-    # Consumer
-    'COST', 'WMT', 'TGT', 'NKE', 'SBUX', 'MCD', 'DIS',
-    # Industrial
-    'CAT', 'DE', 'GE', 'BA', 'LMT', 'RTX',
+    'XOM', 'CVX', 'COP', 'SLB', 'OXY', 'MPC', 'EQT',
+    # Consumer / Retail
+    'COST', 'WMT', 'TGT', 'NKE', 'SBUX', 'MCD', 'DIS', 'HD', 'LOW', 'LULU',
+    'CMG', 'BKNG', 'ABNB', 'DLTR', 'CHWY', 'CELH', 'TOST', 'DASH', 'DKNG',
+    # Industrial / Defense
+    'CAT', 'DE', 'GE', 'BA', 'LMT', 'RTX', 'GD', 'HON', 'UNP', 'UPS',
+    # Staples / Dividend
+    'PG', 'KO', 'PEP', 'CL', 'PM', 'MO', 'MDLZ', 'AFL',
+    # Telecom / Media
+    'T', 'VZ', 'CMCSA', 'SPOT', 'EA',
+    # International ADRs
+    'BIDU', 'PDD', 'SE', 'SHOP', 'MELI', 'NTES',
     # EV / Clean energy
-    'RIVN', 'LCID', 'FSLR', 'ENPH',
+    'TSLA', 'RIVN', 'LCID', 'FSLR', 'ENPH', 'ACHR',
+    # Other
+    'PINS', 'ZM', 'F', 'GM', 'CCL', 'LVS', 'TRIP', 'WBA', 'CVS',
+    'DOW', 'MMM', 'LIN', 'APD', 'NEE', 'AEP', 'ADP', 'APH', 'VRT', 'TEM',
 ]
 
 
@@ -77,188 +97,19 @@ def load_stock(symbol, data_dir):
 
 
 def fetch_stock(symbol, data_dir, start='2020-01-01', end='2026-12-31', suffix=''):
-    """Fetch a single stock from Yahoo Finance.
-
-    Args:
-        symbol: Base ticker (e.g. 'AAPL' or '2330')
-        data_dir: Directory to save the file
-        start/end: Date range
-        suffix: Yahoo Finance suffix ('' for US, '.TW' for TWSE, '.TWO' for OTC)
-    """
+    """Fetch a single stock from Yahoo Finance using the crawler module."""
     try:
-        import yfinance as yf
-        ticker = f"{symbol}{suffix}"
-        df = yf.download(ticker, start=start, end=end, progress=False)
-        if df is None or df.empty:
+        df = fetch_stock_data(symbol, suffix, start, end)
+        if df is None or (hasattr(df, 'empty') and df.empty):
             return False
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.drop(columns=['Adj Close'], errors='ignore')
-        if isinstance(df.index, pd.DatetimeIndex):
-            df.index = df.index.strftime('%Y/%m/%d')
-        df['Date'] = df.index
-        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-        filepath = Path(data_dir) / f"{symbol}.txt"
-        df.to_csv(filepath, sep='\t', index=False)
+        save_stock_data(df, symbol, folder=Path(data_dir))
         return True
     except Exception:
         return False
 
 
-def analyze(symbol, df):
-    """Analyze one stock. Returns result dict or None."""
-    if len(df) < 60:
-        return None
-
-    # Use last 500 bars for speed
-    if len(df) > 500:
-        df = df.iloc[-500:]
-
-    peaks, troughs = detect_peaks_troughs_enhanced(df, column='close')
-    if len(peaks) < 3 or len(troughs) < 3:
-        return None
-
-    best = find_best_impulse_wave(df, peaks, troughs, column='close')
-    if best.get('wave_type') in ('no_candidates', 'no_pattern'):
-        return None
-
-    wave_data = {
-        'impulse_wave': best.get('wave_points', np.array([])),
-        'confidence': best.get('confidence', 0),
-        'wave_type': best.get('wave_type', 'unknown'),
-        'pattern_relationships': {},
-        'multiple_patterns': [],
-    }
-
-    pa = adapt_wave_data_to_strategy_input(df, wave_data, column='close')
-    tc = pa.get('trend_context', {})
-    pos = pa.get('current_position', {})
-    mom = pa.get('momentum', {})
-
-    if not pos:
-        return None
-
-    price = float(df['close'].iloc[-1])
-    wave = pos.get('wave_number', 0)
-    trend = tc.get('trend', 'neutral')
-    pdir = pos.get('trend_direction', 'unknown')
-    conf = pa.get('confidence', 0)
-
-    entry_ok = mom.get('entry_ok', False)
-    exit_warn = mom.get('exit_warning', False)
-    composite = mom.get('composite_score', 0)
-    regime = mom.get('regime', '?')
-    stop_mult = mom.get('stop_multiplier', 1.0)
-
-    rsi = mom.get('rsi', {})
-    macd = mom.get('macd', {})
-    adx = mom.get('adx', {})
-    vel = mom.get('velocity', {})
-
-    # Compute key levels
-    w2_low = pos.get('wave_2_low', price * 0.95)
-    w1_range = pos.get('wave_1_range', price * 0.05)
-    w2_end = pos.get('wave_2_end', price)
-
-    stop = w2_low * 0.98 * stop_mult + price * (1 - stop_mult) if w2_low else price * 0.95
-    target1 = w2_end + w1_range * 1.618 if w1_range > 0 else price * 1.10
-    target2 = w2_end + w1_range * 2.618 if w1_range > 0 else price * 1.20
-    risk = abs(price - stop)
-    reward = abs(target1 - price)
-    rr = reward / risk if risk > 0 else 0
-
-    # 6M momentum
-    p6m = float(df['close'].iloc[-min(126, len(df))])
-    mom_6m = (price / p6m - 1) * 100
-
-    return {
-        'symbol': symbol,
-        'price': price,
-        'wave': wave,
-        'trend': trend,
-        'pdir': pdir,
-        'conf': conf,
-        'entry_ok': entry_ok,
-        'exit_warn': exit_warn,
-        'composite': composite,
-        'regime': regime,
-        'rsi': rsi.get('value', 50),
-        'rsi_zone': rsi.get('zone', '?'),
-        'rsi_div': rsi.get('divergence', None),
-        'macd_cross': macd.get('crossover', None),
-        'macd_mom': macd.get('momentum', '?'),
-        'adx': adx.get('value', 0),
-        'adx_trending': adx.get('trending', False),
-        'vel_5d': vel.get('velocity_5d', 0),
-        'vel_20d': vel.get('velocity_20d', 0),
-        'speed': vel.get('speed_regime', '?'),
-        'mom_6m': mom_6m,
-        'stop': stop,
-        'target1': target1,
-        'target2': target2,
-        'rr': rr,
-    }
 
 
-def classify_action(r):
-    """Classify into BUY / WATCH / HOLD / AVOID."""
-    wave = r['wave']
-    trend = r['trend']
-    pdir = r['pdir']
-    entry_ok = r['entry_ok']
-    exit_warn = r['exit_warn']
-    conf = r['conf']
-
-    # Hard filters
-    if trend == 'bearish':
-        return 'AVOID', 'Bearish trend'
-    if exit_warn and wave >= 5:
-        return 'EXIT', 'Wave {} + exit warning'.format(wave)
-    if pdir == 'down' and trend == 'bullish':
-        return 'AVOID', 'Counter-trend pattern'
-    if conf < 0.20:
-        return 'SKIP', 'Low confidence ({:.0f}%)'.format(conf * 100)
-
-    # BUY conditions: ALL must be true
-    if (wave in [1, 2, 3] and
-            trend == 'bullish' and
-            pdir == 'up' and
-            entry_ok and
-            not exit_warn and
-            conf >= 0.25 and
-            r['rr'] >= 2.0):
-        if wave == 3:
-            return 'STRONG BUY', 'Wave 3 + momentum confirmed'
-        elif wave == 2:
-            return 'BUY', 'Wave 2 completion, preparing for Wave 3'
-        else:
-            return 'BUY', 'Wave 1, early trend'
-
-    if (wave == 4 and
-            trend == 'bullish' and
-            entry_ok and
-            r['rr'] >= 1.5):
-        return 'BUY DIP', 'Wave 4 pullback in uptrend'
-
-    # WATCH: close to a buy but missing something
-    if wave in [1, 2, 3, 4] and trend == 'bullish' and pdir == 'up':
-        missing = []
-        if not entry_ok:
-            missing.append('momentum')
-        if r['rr'] < 2.0:
-            missing.append('risk/reward')
-        if conf < 0.25:
-            missing.append('confidence')
-        return 'WATCH', 'Missing: {}'.format(', '.join(missing) if missing else 'timing')
-
-    # WATCH: Bullish trend stocks completing correction — potential new wave forming
-    if wave in [5, 6] and trend == 'bullish' and entry_ok and not exit_warn:
-        return 'WATCH', 'Bullish trend, watching for new Wave 1'
-
-    if wave in [5, 6]:
-        return 'HOLD', 'Wave {} — wait for new impulse'.format(wave)
-
-    return 'WAIT', 'No clear setup'
 
 
 def main():
@@ -288,6 +139,8 @@ def main():
                         help='Show detailed analysis for WATCH/EXIT candidates')
     parser.add_argument('--top', type=int, default=10,
                         help='Show top N candidates in each category')
+    parser.add_argument('--output', type=str, metavar='FILE',
+                        help='Save analysis results to a JSON file')
     args = parser.parse_args()
 
     config = load_config()
@@ -299,8 +152,16 @@ def main():
     try:
         intl = pd.read_csv(config['international_file'])
         symbols.extend(list(intl['code']))
-    except Exception:
-        pass
+    except FileNotFoundError:
+        logging.warning(
+            "International stock list not found: %s — run with --expand or create the file.",
+            config.get('international_file', '(not configured)'),
+        )
+    except Exception as e:
+        logging.warning(
+            "Failed to load international stock list '%s': %s",
+            config.get('international_file', '(not configured)'), e,
+        )
 
     if args.expand:
         for s in EXPANDED_UNIVERSE:
@@ -315,13 +176,31 @@ def main():
         try:
             listed_df = pd.read_excel(config['list_file'])
             tw_listed = [str(c) for c in listed_df.iloc[:, 0]]
-        except Exception:
-            pass
+        except FileNotFoundError:
+            logging.warning(
+                "TWSE listed stock list not found: %s — Taiwan listed stocks will be skipped. "
+                "Download the file or remove --tw flag.",
+                config.get('list_file', '(not configured)'),
+            )
+        except Exception as e:
+            logging.warning(
+                "Failed to load TWSE listed stock list '%s': %s",
+                config.get('list_file', '(not configured)'), e,
+            )
         try:
             otc_df = pd.read_excel(config['otclist_file'])
             tw_otc = [str(c) for c in otc_df.iloc[:, 0]]
-        except Exception:
-            pass
+        except FileNotFoundError:
+            logging.warning(
+                "OTC stock list not found: %s — Taiwan OTC stocks will be skipped. "
+                "Download the file or remove --tw flag.",
+                config.get('otclist_file', '(not configured)'),
+            )
+        except Exception as e:
+            logging.warning(
+                "Failed to load OTC stock list '%s': %s",
+                config.get('otclist_file', '(not configured)'), e,
+            )
 
         tw_all = tw_listed + tw_otc
         tw_limit = args.tw_top if args.tw_top > 0 else len(tw_all)
@@ -350,25 +229,40 @@ def main():
             listed_df = pd.read_excel(config['list_file'])
             for c in listed_df.iloc[:, 0]:
                 tw_suffix_map[str(c)] = '.TW'
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(
+                "Failed to build TWSE suffix map from '%s': %s",
+                config.get('list_file', '(not configured)'), e,
+            )
         try:
             otc_df = pd.read_excel(config['otclist_file'])
             for c in otc_df.iloc[:, 0]:
                 tw_suffix_map[str(c)] = '.TWO'
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(
+                "Failed to build OTC suffix map from '%s': %s",
+                config.get('otclist_file', '(not configured)'), e,
+            )
 
     # Fetch data if requested
     if args.refresh:
-        missing = [s for s in symbols if not (Path(data_dir) / f"{s}.txt").exists()]
-        if missing:
-            print("Fetching data for {} stocks...".format(len(missing)))
-            for i, s in enumerate(missing, 1):
-                suffix = tw_suffix_map.get(s, '')
-                ok = fetch_stock(s, data_dir, suffix=suffix)
-                status = 'OK' if ok else 'FAIL'
-                print("  [{}/{}] {}{} {}".format(i, len(missing), s, suffix, status))
+        to_fetch = list(symbols)  # refresh all to get latest prices
+        print("Refreshing data for {} stocks...".format(len(to_fetch)))
+        ok_count = 0
+        fail_count = 0
+        for i, s in enumerate(to_fetch, 1):
+            suffix = tw_suffix_map.get(s, '')
+            sys.stdout.write("\r  Fetching... [{}/{}] {}{}   ".format(i, len(to_fetch), s, suffix))
+            sys.stdout.flush()
+            ok = fetch_stock(s, data_dir, suffix=suffix)
+            if ok:
+                ok_count += 1
+            else:
+                fail_count += 1
+                sys.stdout.write("\r  [{}/{}] {}{} FAIL\n".format(i, len(to_fetch), s, suffix))
+                sys.stdout.flush()
+        sys.stdout.write("\n")
+        print("  Refreshed: {} OK, {} failed".format(ok_count, fail_count))
 
     # Scan
     total = len(symbols)
@@ -377,7 +271,9 @@ def main():
 
     print("\nScanning {} stocks...".format(total))
 
-    for symbol in symbols:
+    for idx, symbol in enumerate(symbols, 1):
+        sys.stdout.write("\r  Scanning stocks... [{}/{}] {}   ".format(idx, total, symbol))
+        sys.stdout.flush()
         df = load_stock(symbol, data_dir)
         if df is None:
             no_data += 1
@@ -388,17 +284,21 @@ def main():
             r['action'] = action
             r['reason'] = reason
             results.append(r)
+    sys.stdout.write("\n")
+
+    # --- Market regime overlay ---
+    market_regime, regime_msg, exit_pct = apply_market_regime(results)
 
     # Separate into categories
-    buys = [r for r in results if r['action'] in ('STRONG BUY', 'BUY', 'BUY DIP')]
+    buys = [r for r in results if r['action'] in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')]
     watches = [r for r in results if r['action'] == 'WATCH']
     holds = [r for r in results if r['action'] in ('HOLD', 'WAIT')]
     exits = [r for r in results if r['action'] == 'EXIT']
     avoids = [r for r in results if r['action'] in ('AVOID', 'SKIP')]
 
-    # Sort buys by risk/reward
-    buys.sort(key=lambda x: x['rr'], reverse=True)
-    watches.sort(key=lambda x: x['conf'], reverse=True)
+    # Sort by composite score
+    buys.sort(key=lambda x: x.get('score', 0), reverse=True)
+    watches.sort(key=lambda x: x.get('score', 0), reverse=True)
 
     # Output
     print()
@@ -406,6 +306,9 @@ def main():
     print("  WHAT TO BUY NOW — {}".format(datetime.now().strftime('%Y-%m-%d %H:%M')))
     print("  {} stocks scanned, {} with data, {} analyzed".format(
         total, total - no_data, len(results)))
+    regime_colors = {'FAVORABLE': '\033[32m', 'MIXED': '\033[33m', 'CAUTION': '\033[31m'}
+    print("  Market regime: {}{}{}  ({})".format(
+        regime_colors.get(market_regime, ''), market_regime, '\033[0m', regime_msg))
     print("=" * 90)
 
     if buys:
@@ -503,6 +406,60 @@ def main():
     if not args.expand:
         print("  TIP: Run with --expand to scan 70+ US stocks across all sectors.")
     print()
+
+    # JSON export if --output is provided
+    if args.output:
+        export = {
+            'scan_date': datetime.now().isoformat(),
+            'market_regime': {
+                'regime': market_regime,
+                'exit_pct': round(exit_pct, 1),
+                'message': regime_msg,
+            },
+            'buy_candidates': [
+                {
+                    'symbol': r['symbol'],
+                    'score': r.get('score', 0),
+                    'price': round(r['price'], 2),
+                    'action': r['action'],
+                    'wave_position': r['wave'],
+                    'entry': round(r['price'], 2),
+                    'stop': round(r['stop'], 2),
+                    'target1': round(r['target1'], 2),
+                    'target2': round(r['target2'], 2),
+                    'rr': round(r['rr'], 2),
+                    'confidence': round(r['conf'] * 100, 1),
+                    'reason': r['reason'],
+                }
+                for r in buys
+            ],
+            'watch_list': [
+                {
+                    'symbol': r['symbol'],
+                    'score': r.get('score', 0),
+                    'price': round(r['price'], 2),
+                    'action': r['action'],
+                    'wave_position': r['wave'],
+                    'reason': r['reason'],
+                }
+                for r in watches
+            ],
+            'summary': {
+                'total_scanned': total,
+                'with_data': total - no_data,
+                'analyzed': len(results),
+                'buy_candidates': len(buys),
+                'watch_list': len(watches),
+                'holds': len(holds),
+                'exits': len(exits),
+                'avoids': len(avoids),
+            },
+        }
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(export, f, indent=2, ensure_ascii=False)
+        print("  Results saved to {}".format(args.output))
 
 
 if __name__ == '__main__':

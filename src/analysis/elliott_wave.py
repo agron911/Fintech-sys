@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,7 +9,7 @@ import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
 from enum import Enum
 from src.analysis.core import detect_peaks_troughs_enhanced, validate_impulse_wave_rules
-from src.analysis.core.validation import validate_wave_4_overlap, validate_diagonal_triangle, analyze_diagonal_trend_lines, analyze_diagonal_volume_pattern, analyze_diagonal_wave_alternation
+from src.analysis.core.validation import validate_wave_4_overlap, validate_wave_directions, validate_diagonal_triangle, analyze_diagonal_trend_lines, analyze_diagonal_volume_pattern, analyze_diagonal_wave_alternation
 from src.analysis.plotters.elliott import plot_elliott_wave_analysis, plot_elliott_wave_analysis_enhanced, plot_subwaves_recursive
 from src.analysis.core.impulse import find_elliott_wave_pattern_enhanced
 from src.analysis.core.corrective_patterns import detect_corrective_patterns
@@ -18,6 +19,7 @@ from matplotlib.patches import Rectangle, FancyBboxPatch
 from matplotlib.lines import Line2D
 from src.utils.common_utils import get_confidence_description
 
+logger = logging.getLogger(__name__)
 
 # WaveProperties and ElliottWave classes are imported from src.analysis.core.models at line 16
 # Removed duplicate definitions to maintain single source of truth
@@ -71,8 +73,9 @@ def validate_volume_patterns(df: pd.DataFrame, wave_points: np.ndarray) -> float
                 confidence += 0.3
         
         return min(confidence, 1.0)
-    
-    except Exception:
+
+    except Exception as e:
+        logger.warning(f"Volume pattern validation failed, returning neutral score: {e}")
         return 0.5
 
 
@@ -127,8 +130,9 @@ def validate_alternation_principle(df: pd.DataFrame, wave_points: np.ndarray,
                 confidence += 0.4
         
         return min(confidence, 1.0)
-    
-    except Exception:
+
+    except Exception as e:
+        logger.warning(f"Alternation principle validation failed, returning neutral score: {e}")
         return 0.5
 
 
@@ -178,6 +182,18 @@ def create_info_panel(wave_data: Dict[str, Any], validation_details: Dict[str, A
             panel_lines.append("   (Overlap Allowed)")
     
     return '\n'.join(panel_lines)
+
+
+def detect_elliott_wave_complete(df: pd.DataFrame, column: str = 'close') -> Dict[str, Any]:
+    """Run complete Elliott Wave detection and return results."""
+    result = find_elliott_wave_pattern_enhanced(df, column=column)
+    if result is None:
+        return {'impulse_wave': None, 'confidence': 0.0}
+    return {
+        'impulse_wave': result.get('wave_points'),
+        'confidence': result.get('confidence', 0.0),
+        **result
+    }
 
 
 def detect_current_wave_position(df: pd.DataFrame, column: str = 'close') -> Dict[str, Any]:

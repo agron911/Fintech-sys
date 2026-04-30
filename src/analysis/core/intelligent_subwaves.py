@@ -359,9 +359,9 @@ def generate_impulse_candidates_with_intelligent_subwaves(df: pd.DataFrame,
     labeled_points.sort(key=lambda x: x[0])
     logger.debug(f"Labeled points: {len(labeled_points)} (peaks: {len(peaks)}, troughs: {len(troughs)})")
     cutoff_date = df.index.max() - pd.DateOffset(years=5)
-    recent_indices = df.index >= cutoff_date
+    cutoff_iloc = df.index.searchsorted(cutoff_date)
     valid_start_points = [sp for sp in (troughs if start_type == 'trough' else peaks)
-                         if sp < len(df) and sp in df[recent_indices].index.get_indexer(df.index)]
+                         if sp < len(df) and sp >= cutoff_iloc]
     valid_start_points = valid_start_points[-8:]  # More permissive: last 8
     logger.debug(f"Start type: {start_type}, valid_start_points: {valid_start_points}")
     for start_idx in valid_start_points:

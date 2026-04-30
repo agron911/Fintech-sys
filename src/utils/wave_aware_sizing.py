@@ -9,7 +9,7 @@ Different waves have different probabilities of success:
 """
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import logging
 

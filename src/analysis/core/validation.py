@@ -14,7 +14,7 @@ class ValidationConfig:
     fibonacci_tolerance: float = 0.15
     wave2_max_retracement: float = 0.9
     wave3_min_ratio: float = 1.0
-    overlap_allowed: bool = True
+    overlap_allowed: bool = False
     acceptance_threshold: float = 0.3
     reality_adjustment: float = 0.85
     
@@ -300,18 +300,28 @@ def _validate_wave_3_length_consolidated(waves: Dict[int, float],
         'is_longest': wave_3_length == max_length
     }
 
-def _validate_wave_4_overlap_consolidated(prices: np.ndarray, 
+def _validate_wave_4_overlap_consolidated(prices: np.ndarray,
                                         config: ValidationConfig) -> Dict[str, Any]:
-    """Consolidated Wave 4 overlap validation"""
+    """Consolidated Wave 4 overlap validation.
+
+    Checks whether ANY point during Wave 4 enters Wave 1's price territory,
+    not just the Wave 4 endpoint. For an upward impulse, Wave 4's low must
+    stay above Wave 1's high.
+    """
     if len(prices) < 5:
         return {'valid': True, 'confidence': 0.0}
-    
+
     wave_1_high = max(prices[0], prices[1])
     wave_1_low = min(prices[0], prices[1])
+
+    # Check the ENTIRE Wave 4 range (from Wave 3 end to Wave 4 end)
+    # The deepest point of Wave 4 is what matters, not just its endpoint
+    wave_4_low = min(prices[3], prices[4])  # Wave 4 spans from point 3 to point 4
     wave_4_end = prices[4]
-    
-    has_overlap = wave_1_low <= wave_4_end <= wave_1_high
-    
+
+    # Overlap occurs when Wave 4's lowest point enters Wave 1's price range
+    has_overlap = wave_4_low <= wave_1_high
+
     if has_overlap and not config.overlap_allowed:
         return {
             'valid': False,
@@ -319,22 +329,22 @@ def _validate_wave_4_overlap_consolidated(prices: np.ndarray,
             'has_overlap': True,
             'error': 'wave4_overlaps_wave1'
         }
-    
+
     # Calculate confidence
     confidence = 0.15 if not has_overlap else 0.05
-    
-    # Check for minor overlap (might be acceptable)
+
+    # Check for minor overlap (might be acceptable in diagonals)
     minor_overlap = False
     if has_overlap:
         wave_1_range = wave_1_high - wave_1_low
         if wave_1_range > 0:
-            overlap_amount = min(abs(wave_4_end - wave_1_low), abs(wave_4_end - wave_1_high))
+            overlap_amount = max(0, wave_1_high - wave_4_low)
             overlap_pct = overlap_amount / wave_1_range
             minor_overlap = overlap_pct < 0.1
-            
+
             if minor_overlap:
                 confidence = 0.1  # Minor penalty for small overlap
-    
+
     return {
         'valid': True,
         'confidence': confidence,

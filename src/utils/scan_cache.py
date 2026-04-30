@@ -108,6 +108,7 @@ class ScanCache:
             return {
                 'timestamp': cache_data['timestamp'],
                 'age_seconds': age_seconds,
+                'age_hours': age_seconds / 3600,
                 'age_formatted': self._format_age(age_seconds),
                 'timeframe': cache_data['timeframe'],
                 'chart_type': cache_data['chart_type'],

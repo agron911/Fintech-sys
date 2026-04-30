@@ -24,6 +24,14 @@ def _get_momentum():
         _momentum = compute_momentum_composite
     return _momentum
 
+_regime = None
+def _get_regime():
+    global _regime
+    if _regime is None:
+        from src.analysis.core.regime import detect_regime
+        _regime = detect_regime
+    return _regime
+
 
 def adapt_wave_data_to_strategy_input(df: pd.DataFrame,
                                       wave_data: Dict[str, Any],
@@ -79,6 +87,39 @@ def adapt_wave_data_to_strategy_input(df: pd.DataFrame,
     adjusted_confidence *= momentum_composite.get('confidence_adjustment', 1.0)
     adjusted_confidence = min(adjusted_confidence, 1.0)
 
+    # Detect market regime (trending / ranging / volatile)
+    try:
+        regime_info = _get_regime()(df)
+    except Exception:
+        regime_info = {
+            'trend_strength': 'unknown', 'volatility': 'unknown',
+            'regime': 'unknown', 'adx': 0, 'atr_pct': 0,
+            'strategy_hint': 'default',
+        }
+
+    # Adjust confidence based on regime alignment:
+    # - Trending regime boosts trend-following signals (pattern direction matches trend)
+    # - Ranging regime penalizes trend-following and boosts mean-reversion setups
+    # - Volatile regime applies a small penalty (wider risk, lower conviction)
+    regime_type = regime_info.get('regime', 'unknown')
+    pattern_dir = current_position.get('trend_direction', 'unknown') if current_position else 'unknown'
+    broad_trend = trend_context.get('trend', 'neutral')
+
+    if regime_type == 'trending':
+        # Trending market: boost if pattern aligns with the broad trend
+        if (broad_trend == 'bullish' and pattern_dir == 'up') or \
+           (broad_trend == 'bearish' and pattern_dir == 'down'):
+            adjusted_confidence = min(adjusted_confidence * 1.10, 1.0)
+        else:
+            adjusted_confidence *= 0.95
+    elif regime_type == 'ranging':
+        # Ranging market: trend-following signals are less reliable
+        if pattern_dir in ('up', 'down'):
+            adjusted_confidence *= 0.90
+    elif regime_type == 'volatile':
+        # High volatility: reduce conviction across the board
+        adjusted_confidence *= 0.92
+
     return {
         'alignment_score': alignment_score,
         'current_position': current_position,
@@ -87,6 +128,7 @@ def adapt_wave_data_to_strategy_input(df: pd.DataFrame,
         'raw_confidence': confidence,
         'trend_context': trend_context,
         'momentum': momentum_composite,
+        'regime': regime_info,
         'wave_data': wave_data,  # preserve original for advanced use
     }
 

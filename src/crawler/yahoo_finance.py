@@ -4,22 +4,11 @@ import yfinance as yf
 import traceback
 from src.utils.config import load_config
 import datetime as dt
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
 import os
 import requests
-from fake_useragent import UserAgent
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 import numpy as np
 import random
 import time
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,37 +19,70 @@ from retrying import retry
 
 # yf.pdr_override()
 
-
-# Load config
-config = load_config()
-
-data_dir = Path(config['data_dir'])
-stk2_dir = Path(config['stk2_dir'])
-adjustments_dir = Path(config['adjustments_dir'])
-start = pd.to_datetime(config['start_date'])
-end = pd.to_datetime(config['end_date'])
-international_file = Path(config['international_file'])
-list_file = Path(config['list_file'])
-otclist_file = Path(config['otclist_file'])
-
-save_file_path = stk2_dir
-logger.info(save_file_path)
-
 # Update interval in days - files older than this will be re-fetched
-UPDATE_INTERVAL_DAYS = 7
+UPDATE_INTERVAL_DAYS = 1
+
+# Lazy initialization state
+_initialized = False
+config = None
+data_dir = None
+stk2_dir = None
+adjustments_dir = None
+start = None
+end = None
+international_file = None
+list_file = None
+otclist_file = None
+save_file_path = None
+
+
+def _ensure_init():
+    global _initialized, config, data_dir, stk2_dir, adjustments_dir
+    global start, end, international_file, list_file, otclist_file, save_file_path
+    if _initialized:
+        return
+    config = load_config()
+    data_dir = Path(config['data_dir'])
+    stk2_dir = Path(config['stk2_dir'])
+    adjustments_dir = Path(config['adjustments_dir'])
+    start = pd.to_datetime(config['start_date'])
+    end = pd.to_datetime(config['end_date'])
+    international_file = Path(config['international_file'])
+    list_file = Path(config['list_file'])
+    otclist_file = Path(config['otclist_file'])
+    save_file_path = stk2_dir
+    logger.info(save_file_path)
+    _initialized = True
 
 def should_update_file(file_path, max_age_days=UPDATE_INTERVAL_DAYS):
-    """Check if a file should be updated based on age."""
+    """Check if a file should be updated based on file age AND data recency."""
     if not file_path.exists():
         return True
-    
+
     file_age = (dt.datetime.now() - dt.datetime.fromtimestamp(file_path.stat().st_mtime)).days
-    should_update = file_age >= max_age_days
-    
-    if not should_update:
-        logger.info(f"Skipping {file_path.name} - updated {file_age} days ago")
-    
-    return should_update
+    if file_age >= max_age_days:
+        return True
+
+    # Also check if the data inside is stale (last row date vs today)
+    try:
+        with open(file_path, 'rb') as f:
+            f.seek(0, 2)
+            size = f.tell()
+            # Read last 200 bytes to find the last line
+            f.seek(max(0, size - 200))
+            last_lines = f.read().decode('utf-8', errors='ignore').strip().split('\n')
+            last_line = last_lines[-1]
+            last_date_str = last_line.split('\t')[0].strip()
+            last_date = dt.datetime.strptime(last_date_str, "%Y/%m/%d")
+            data_age = (dt.datetime.now() - last_date).days
+            if data_age >= max_age_days:
+                logger.info(f"Data in {file_path.name} is {data_age} days old, re-fetching")
+                return True
+    except Exception:
+        pass  # If we can't parse, fall through to skip
+
+    logger.info(f"Skipping {file_path.name} - updated {file_age} days ago, data is current")
+    return False
 
 def delete_files():
     """Legacy function - kept for compatibility. Use incremental updates instead."""
@@ -71,7 +93,10 @@ def delete_files():
 
 
 
-def save_stock_data(df, stock_code, folder=save_file_path, long_tail=False):
+def save_stock_data(df, stock_code, folder=None, long_tail=False):
+    _ensure_init()
+    if folder is None:
+        folder = save_file_path
     # Ensure the folder exists
     folder.mkdir(parents=True, exist_ok=True)
     
@@ -110,7 +135,7 @@ def save_stock_data(df, stock_code, folder=save_file_path, long_tail=False):
 def fetch_stock_data(stock_code, suffix, start, end):
     try:
         logger.info(f"{stock_code}{suffix}")
-        df = yf.download(f"{stock_code}{suffix}", start=start, end=end)
+        df = yf.download(f"{stock_code}{suffix}", start=start, end=end, auto_adjust=True)
 
         # Check if DataFrame is empty
         if df is None or df.empty:
@@ -133,6 +158,7 @@ def fetch_stock_data(stock_code, suffix, start, end):
 
 
 def crawl_all_ch():
+    _ensure_init()
     logger.info(f'international_file absolute path: {international_file.resolve()}')
     international_stock = pd.read_csv(international_file)
     international_suffix = ""
@@ -165,12 +191,12 @@ def crawl_all_ch():
             
     file_path = save_file_path / "TWII.txt"
     if should_update_file(file_path):
-        df = fetch_stock_data("^TWII", "", start, end)
-
-    if df is not None:
-        save_stock_data(df, "TWII")
+        twii_df = fetch_stock_data("^TWII", "", start, end)
+        if twii_df is not None:
+            save_stock_data(twii_df, "TWII")
 
 def crawl_otc_yf():
+    _ensure_init()
     stock_list = pd.read_excel(otclist_file)
     all_otc_stock = stock_list.iloc[:, 0]
     otc_code = ".TWO"
@@ -217,7 +243,7 @@ class YahooFinanceCrawler(BaseCrawler):
         symbol_with_suffix = f"{symbol}{suffix}" if suffix else symbol
         try:
             self.logger.info(f"Fetching data for {symbol_with_suffix} from {start} to {end}")
-            df = yf.download(symbol_with_suffix, start=start, end=end, progress=False)
+            df = yf.download(symbol_with_suffix, start=start, end=end, progress=False, auto_adjust=True)
 
             if df is None or df.empty:
                 self.logger.warning(f"No data returned for {symbol_with_suffix}")

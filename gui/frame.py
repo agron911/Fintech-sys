@@ -1,4 +1,6 @@
 import wx
+import wx.adv
+import wx.html
 import os
 import pandas as pd
 import threading
@@ -18,101 +20,293 @@ from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
 from gui.constants import WEBLIST, CHART_TYPES
 from gui.handlers import (
     handle_storing_path, handle_crawl_data, handle_run_backtest, handle_show_elliott_wave, handle_analyze_current_position, handle_chart_type_change,
-    EnableButtonsEvent, EVT_ENABLE_BUTTONS
+    EnableButtonsEvent, EVT_ENABLE_BUTTONS,
+    UpdateOutputEvent, EVT_UPDATE_OUTPUT,
+    UpdatePlotEvent, EVT_UPDATE_PLOT,
 )
 from src.utils.common_utils import resample_ohlc, map_points_to_ohlc
-import wx.lib.newevent
 from typing import Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
 
-UpdateOutputEvent, EVT_UPDATE_OUTPUT = wx.lib.newevent.NewEvent()
-UpdatePlotEvent, EVT_UPDATE_PLOT = wx.lib.newevent.NewEvent()
+class CompatListCtrl(wx.ListCtrl):
+    """wx.ListCtrl subclass providing wx.ListBox-compatible Clear/Append methods
+    so that handlers.py (which cannot be modified) keeps working."""
+
+    def Clear(self):
+        """ListBox-compatible: delete all items."""
+        self.DeleteAllItems()
+
+    def Append(self, text):
+        """ListBox-compatible: append a single display string.
+        The text is placed in column 0; additional columns are left empty
+        so callers can fill them via SetItem if desired."""
+        idx = self.GetItemCount()
+        self.InsertItem(idx, text)
+
+    def GetStringSelection(self):
+        """ListBox-compatible: return text from column 0 of the focused item."""
+        sel = self.GetFirstSelected()
+        if sel == -1:
+            return ""
+        return self.GetItemText(sel, 0)
+
+
+# Menu item IDs
+ID_SCAN = wx.NewIdRef()
+ID_WAVE = wx.NewIdRef()
+ID_BACKTEST = wx.NewIdRef()
+ID_POSITION = wx.NewIdRef()
+ID_LOAD_SCAN = wx.NewIdRef()
+ID_EXPORT = wx.NewIdRef()
+ID_FETCH_ALL = wx.NewIdRef()
+ID_FETCH_US = wx.NewIdRef()
+ID_FETCH_TW = wx.NewIdRef()
+ID_VALIDATE = wx.NewIdRef()
+ID_ABOUT = wx.NewIdRef()
+ID_SHORTCUTS = wx.NewIdRef()
+
 
 class MyFrame(wx.Frame):
     def __init__(self):
         screen_size = wx.DisplaySize()
-        default_width = min(screen_size[0] * 0.9, 1000)
-        default_height = min(screen_size[1] * 0.9, 700)
-        super().__init__(None, title="Investment System Interface", size=(int(default_width), int(default_height)))
+        default_width = max(int(screen_size[0] * 0.85), 900)
+        default_height = max(int(screen_size[1] * 0.85), 600)
+        super().__init__(
+            None,
+            title="Fintech-sys \u2014 Elliott Wave Trading System",
+            size=(default_width, default_height),
+        )
+        self.SetMinSize((900, 600))
+
         self.root = os.getcwd()
         self.logger = setup_logging()
         self.config = load_config()
         self.crawler = YahooFinanceCrawler(self.config)
         self.backtester = Backtester(self.config)
-        self.panel = wx.ScrolledWindow(self, -1)
-        self.panel.SetScrollbars(20, 20, 50, 50)
-        self.figure, self.ax = plt.subplots(figsize=(default_width / 100, default_height / 200))
-        self.canvas = FigureCanvas(self.panel, -1, self.figure)
         self.multi_path_build()
-        self.vbox = wx.BoxSizer(wx.VERTICAL)
-        self.output = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 150))
-        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
-        text1 = wx.StaticText(self.panel, label="Target Web Crawling: ", size=(130, -1))
-        self.combo1 = wx.ComboBox(self.panel, choices=WEBLIST, value="ALL", style=wx.CB_READONLY)
-        hbox1.Add(text1, 0, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hbox1.Add(self.combo1, 0, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
-        text2 = wx.StaticText(self.panel, label="Storing Path: ")
-        self.input1 = wx.TextCtrl(self.panel, style=wx.TE_READONLY)
-        self.input1.SetValue(self.config.get('stk2_dir', os.path.join(self.config['data_dir'], 'raw')))
-        hbox1.Add(text2, 0, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hbox1.Add(self.input1, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        button0 = wx.Button(self.panel, label="Change Path")
-        self.Bind(wx.EVT_BUTTON, lambda event: handle_storing_path(self, event), button0)
-        hbox1.Add(button0, 0, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hbox2 = wx.BoxSizer(wx.HORIZONTAL)
-        text3 = wx.StaticText(self.panel, label="Stock: ", size=(130, -1))
-        self.combo_stock = wx.ComboBox(self.panel, choices=self.get_stock_list(), value="Select Stock", style=wx.CB_READONLY)
-        hbox2.Add(text3, 0, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hbox2.Add(self.combo_stock, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        self.combo_chart_type = wx.ComboBox(self.panel, choices=CHART_TYPES, value="Line", style=wx.CB_READONLY)
-        hbox2.Add(wx.StaticText(self.panel, label="Chart Type: "), 0, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hbox2.Add(self.combo_chart_type, 0, flag=wx.ALL | wx.EXPAND, border=5)
+
+        # Persistent state
         self.chart_type = "Line"
-        self.scanned_timeframe = None  # Store which timeframe was used for scanning
-        self.combo_chart_type.Bind(wx.EVT_COMBOBOX, lambda event: handle_chart_type_change(self, event))
-        hbox3 = wx.BoxSizer(wx.HORIZONTAL)
-        self.crawl_button = wx.Button(self.panel, label="Crawl Data")
-        self.Bind(wx.EVT_BUTTON, lambda event: self.safe_handle_crawl_data(event), self.crawl_button)
-        self.backtest_button = wx.Button(self.panel, label="Run Backtest")
-        self.Bind(wx.EVT_BUTTON, lambda event: self.safe_handle_run_backtest(event), self.backtest_button)
-        self.plot_button = wx.Button(self.panel, label="Show Elliott Wave")
-        self.Bind(wx.EVT_BUTTON, lambda event: self.safe_handle_show_elliott_wave(event), self.plot_button)
-        self.current_pos_button = wx.Button(self.panel, label="Analyze Current Position")
-        self.Bind(wx.EVT_BUTTON, lambda event: self.safe_handle_analyze_current_position(event), self.current_pos_button)
-        self.scan_button = wx.Button(self.panel, label="Scan All Stocks")
-        self.Bind(wx.EVT_BUTTON, lambda event: self.safe_handle_scan_all_stocks(event), self.scan_button)
-        self.load_scan_button = wx.Button(self.panel, label="Load Last Scan")
-        self.Bind(wx.EVT_BUTTON, lambda event: self.safe_handle_load_scan(event), self.load_scan_button)
-        hbox3.Add(self.crawl_button, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox3.Add(self.backtest_button, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox3.Add(self.plot_button, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox3.Add(self.current_pos_button, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox3.Add(self.scan_button, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox3.Add(self.load_scan_button, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox5 = wx.BoxSizer(wx.HORIZONTAL)
-        # Add stocks with patterns listbox on the left
-        self.stocks_list = wx.ListBox(self.panel, style=wx.LB_SINGLE, size=(200, -1))
-        self.stocks_list.Bind(wx.EVT_LISTBOX, self.on_stock_selected)
-        hbox5.Add(self.stocks_list, 0, flag=wx.ALL | wx.EXPAND, border=5)
-        hbox5.Add(self.canvas, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        self.vbox.Add(hbox1, 0, flag=wx.ALL | wx.EXPAND)
-        self.vbox.Add(hbox2, 0, flag=wx.ALL | wx.EXPAND)
-        self.vbox.Add(hbox3, 0, flag=wx.ALL | wx.EXPAND)
-        hbox4 = wx.BoxSizer(wx.HORIZONTAL)
-        hbox4.Add(self.output, 1, flag=wx.ALL | wx.EXPAND, border=5)
-        self.vbox.Add(hbox4, 0, flag=wx.ALL | wx.EXPAND)
-        self.vbox.Add(hbox5, 2, flag=wx.ALL | wx.EXPAND)
-        self.panel.SetSizer(self.vbox)
-        self.panel.Layout()
-        self.SetMinSize((600, 400))
-        self.SetMaxSize((-1, -1))
+        self.scanned_timeframe = None
+        self.buttons_enabled = True
+        self.all_scan_items = []  # unfiltered scan data for search filtering
+
+        # --- Menu bar ---
+        self._create_menu_bar()
+
+        # --- Status bar ---
+        self._create_status_bar()
+
+        # --- Main panel (holds toolbar + splitter) ---
+        self.panel = wx.Panel(self)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # --- Toolbar row ---
+        toolbar_panel = wx.Panel(self.panel)
+        tb_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        lbl_target = wx.StaticText(toolbar_panel, label=" Target:")
+        lbl_target.SetFont(lbl_target.GetFont().Bold())
+        lbl_target.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNTEXT))
+        tb_sizer.Add(lbl_target, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        self.combo1 = wx.ComboBox(
+            toolbar_panel, choices=WEBLIST, value="ALL", style=wx.CB_READONLY,
+        )
+        tb_sizer.Add(self.combo1, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 4)
+
+        tb_sizer.AddSpacer(10)
+        lbl_stock = wx.StaticText(toolbar_panel, label=" Stock:")
+        lbl_stock.SetFont(lbl_stock.GetFont().Bold())
+        lbl_stock.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNTEXT))
+        tb_sizer.Add(lbl_stock, 0, wx.ALIGN_CENTER_VERTICAL)
+        self.combo_stock = wx.ComboBox(
+            toolbar_panel, choices=self.get_stock_list(),
+            value="Select Stock", style=wx.CB_READONLY, size=(200, -1),
+        )
+        tb_sizer.Add(self.combo_stock, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 4)
+
+        tb_sizer.AddStretchSpacer()
+        lbl_chart = wx.StaticText(toolbar_panel, label=" Chart:")
+        lbl_chart.SetFont(lbl_chart.GetFont().Bold())
+        lbl_chart.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNTEXT))
+        tb_sizer.Add(lbl_chart, 0, wx.ALIGN_CENTER_VERTICAL)
+        self.combo_chart_type = wx.ComboBox(
+            toolbar_panel, choices=CHART_TYPES, value="Line",
+            style=wx.CB_READONLY, size=(180, -1),
+        )
+        self.combo_chart_type.Bind(
+            wx.EVT_COMBOBOX, lambda event: handle_chart_type_change(self, event),
+        )
+        tb_sizer.Add(self.combo_chart_type, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 4)
+
+        toolbar_panel.SetSizer(tb_sizer)
+        main_sizer.Add(toolbar_panel, 0, wx.EXPAND | wx.BOTTOM, 2)
+
+        # --- Action buttons row (use ScrolledWindow to guarantee visibility) ---
+        btn_panel = wx.Panel(self.panel)
+        btn_panel.SetBackgroundColour(wx.Colour(245, 245, 245))  # Light gray for contrast
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        btn_style = wx.BU_EXACTFIT
+        btn_names = [
+            ("Crawl Data",        self.safe_handle_crawl_data),
+            ("Scan All Stocks",   self.safe_handle_scan_all_stocks),
+            ("Show Elliott Wave", self.safe_handle_show_elliott_wave),
+            ("Analyze Position",  self.safe_handle_analyze_current_position),
+            ("Run Backtest",      self.safe_handle_run_backtest),
+            ("Load Last Scan",    self.safe_handle_load_scan),
+        ]
+        self._action_buttons = []
+        for label, handler in btn_names:
+            btn = wx.Button(btn_panel, label=label, style=btn_style, size=(-1, 32))
+            btn.Bind(wx.EVT_BUTTON, handler)
+            btn_sizer.Add(btn, 1, wx.EXPAND | wx.ALL, 3)
+            self._action_buttons.append(btn)
+
+        # Assign named references for enable_buttons compat
+        (self.crawl_button, self.scan_button, self.plot_button,
+         self.current_pos_button, self.backtest_button, self.load_scan_button) = self._action_buttons
+
+        btn_panel.SetSizer(btn_sizer)
+        main_sizer.Add(btn_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 2)
+
+        # --- Splitter ---
+        self.splitter = wx.SplitterWindow(
+            self.panel, style=wx.SP_LIVE_UPDATE | wx.SP_3D,
+        )
+        self.splitter.SetMinimumPaneSize(250)
+
+        # ---- Left panel ----
+        left_panel = wx.Panel(self.splitter)
+        left_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # --- Filter row ---
+        filter_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        self.search_ctrl = wx.SearchCtrl(left_panel, size=(-1, -1))
+        self.search_ctrl.SetDescriptiveText("Filter stocks...")
+        self.search_ctrl.ShowCancelButton(True)
+        self.search_ctrl.Bind(wx.EVT_SEARCHCTRL_SEARCH_BTN, self.on_search)
+        self.search_ctrl.Bind(wx.EVT_TEXT, self.on_search)
+        filter_sizer.Add(self.search_ctrl, 1, wx.EXPAND | wx.RIGHT, 4)
+
+        self.action_filter = wx.Choice(left_panel,
+                                       choices=["All", "BUY", "WATCH", "EXIT", "HOLD"])
+        self.action_filter.SetSelection(0)
+        self.action_filter.Bind(wx.EVT_CHOICE, self._on_action_filter)
+        filter_sizer.Add(self.action_filter, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        left_sizer.Add(filter_sizer, 0, wx.EXPAND | wx.ALL, 4)
+
+        # --- Stock list ---
+        self.stocks_list = CompatListCtrl(
+            left_panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL,
+        )
+        self.stocks_list.InsertColumn(0, "Symbol", width=70)
+        self.stocks_list.InsertColumn(1, "Score", width=45)
+        self.stocks_list.InsertColumn(2, "Action", width=60)
+        self.stocks_list.InsertColumn(3, "Conf%", width=50)
+        self.stocks_list.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_stock_selected)
+        left_sizer.Add(self.stocks_list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 4)
+
+        # --- Trade plan panel ---
+        self.trade_panel = wx.Panel(left_panel)
+        self.trade_panel.SetBackgroundColour(wx.Colour(250, 250, 245))
+        tp_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self.trade_header = wx.StaticText(self.trade_panel, label="Select a stock to see trade plan")
+        header_font = self.trade_header.GetFont()
+        header_font.SetPointSize(header_font.GetPointSize() + 1)
+        header_font = header_font.Bold()
+        self.trade_header.SetFont(header_font)
+        tp_sizer.Add(self.trade_header, 0, wx.EXPAND | wx.ALL, 6)
+
+        self.trade_details = wx.StaticText(self.trade_panel, label="")
+        self.trade_details.SetForegroundColour(wx.Colour(60, 60, 60))
+        tp_sizer.Add(self.trade_details, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
+
+        self.trade_panel.SetSizer(tp_sizer)
+        left_sizer.Add(self.trade_panel, 0, wx.EXPAND | wx.ALL, 4)
+
+        left_panel.SetSizer(left_sizer)
+
+        # ---- Right panel (notebook) ----
+        right_panel = wx.Panel(self.splitter)
+        right_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self.notebook = wx.Notebook(right_panel)
+
+        # Tab 0: Dashboard (HTML)
+        self.dashboard_panel = wx.Panel(self.notebook)
+        dash_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.dashboard_html = wx.html.HtmlWindow(
+            self.dashboard_panel,
+            style=wx.html.HW_SCROLLBAR_AUTO,
+        )
+        self.dashboard_html.SetPage(
+            "<html><body style='font-family:sans-serif;font-size:13px;padding:12px;'>"
+            "<h2>Welcome to Fintech-sys</h2>"
+            "<p>Press <b>Ctrl+S</b> or use <b>Analysis &gt; Scan All Stocks</b> to begin.</p>"
+            "<p><b>Quick Start:</b></p>"
+            "<ol>"
+            "<li>Scan stocks to find candidates</li>"
+            "<li>Click a stock to view Elliott Wave chart</li>"
+            "<li>Analyze position for trading signals</li>"
+            "</ol>"
+            "</body></html>"
+        )
+        dash_sizer.Add(self.dashboard_html, 1, wx.EXPAND)
+        self.dashboard_panel.SetSizer(dash_sizer)
+        self.notebook.AddPage(self.dashboard_panel, "Dashboard")
+
+        # Tab 1: Chart
+        self.chart_panel = wx.Panel(self.notebook)
+        chart_sizer = wx.BoxSizer(wx.VERTICAL)
+        fig_w = max(6, default_width / 100)
+        fig_h = max(4, default_height / 200)
+        self.figure, self.ax = plt.subplots(figsize=(fig_w, fig_h))
+        self.canvas = FigureCanvas(self.chart_panel, -1, self.figure)
+        chart_sizer.Add(self.canvas, 1, wx.EXPAND)
+        self.chart_panel.SetSizer(chart_sizer)
+        self.notebook.AddPage(self.chart_panel, "Chart")
+
+        # Tab 2: Log
+        self.log_panel = wx.Panel(self.notebook)
+        log_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.output = wx.TextCtrl(
+            self.log_panel, style=wx.TE_MULTILINE | wx.TE_READONLY,
+        )
+        log_sizer.Add(self.output, 1, wx.EXPAND)
+        self.log_panel.SetSizer(log_sizer)
+        self.notebook.AddPage(self.log_panel, "Log")
+
+        right_sizer.Add(self.notebook, 1, wx.EXPAND)
+        right_panel.SetSizer(right_sizer)
+
+        # Split
+        self.splitter.SplitVertically(left_panel, right_panel, 280)
+        main_sizer.Add(self.splitter, 1, wx.EXPAND)
+
+        self.panel.SetSizer(main_sizer)
+
+        # --- Accelerator table ---
+        accel_tbl = wx.AcceleratorTable([
+            (wx.ACCEL_CTRL, ord('S'), ID_SCAN),
+            (wx.ACCEL_CTRL, ord('E'), ID_WAVE),
+            (wx.ACCEL_CTRL, ord('B'), ID_BACKTEST),
+            (wx.ACCEL_CTRL, ord('P'), ID_POSITION),
+            (wx.ACCEL_CTRL, ord('L'), ID_LOAD_SCAN),
+            (wx.ACCEL_CTRL, ord('Q'), wx.ID_EXIT),
+        ])
+        self.SetAcceleratorTable(accel_tbl)
+
+        # --- Event bindings ---
         self.Bind(wx.EVT_SIZE, self.on_resize)
         self.Bind(EVT_UPDATE_OUTPUT, self.on_update_output)
         self.Bind(EVT_UPDATE_PLOT, self.on_update_plot)
         self.Bind(EVT_ENABLE_BUTTONS, self.on_enable_buttons)
-        self.buttons_enabled = True
 
         # Initialize scan cache
         from src.utils.scan_cache import ScanCache
@@ -120,64 +314,196 @@ class MyFrame(wx.Frame):
 
         # Auto-load last scan on startup
         wx.CallAfter(self.auto_load_last_scan)
+
+    # ------------------------------------------------------------------
+    # Menu bar
+    # ------------------------------------------------------------------
+    def _create_menu_bar(self):
+        """Create the application menu bar."""
+        menu_bar = wx.MenuBar()
+
+        # -- File --
+        file_menu = wx.Menu()
+        file_menu.Append(ID_EXPORT, "Export Results\tCtrl+Shift+E")
+        file_menu.AppendSeparator()
+        file_menu.Append(wx.ID_EXIT, "Quit\tCtrl+Q")
+        menu_bar.Append(file_menu, "&File")
+
+        # -- Analysis --
+        analysis_menu = wx.Menu()
+        analysis_menu.Append(ID_SCAN, "Scan All Stocks\tCtrl+S")
+        analysis_menu.Append(ID_WAVE, "Show Elliott Wave\tCtrl+E")
+        analysis_menu.Append(ID_POSITION, "Analyze Position\tCtrl+P")
+        analysis_menu.Append(ID_LOAD_SCAN, "Load Last Scan\tCtrl+L")
+        menu_bar.Append(analysis_menu, "&Analysis")
+
+        # -- Data --
+        data_menu = wx.Menu()
+        data_menu.Append(ID_FETCH_ALL, "Fetch All Data")
+        data_menu.Append(ID_FETCH_US, "Fetch US Only")
+        data_menu.Append(ID_FETCH_TW, "Fetch Taiwan Only")
+        data_menu.AppendSeparator()
+        data_menu.Append(ID_VALIDATE, "Validate Data")
+        menu_bar.Append(data_menu, "&Data")
+
+        # -- Help --
+        help_menu = wx.Menu()
+        help_menu.Append(ID_ABOUT, "About")
+        help_menu.Append(ID_SHORTCUTS, "Keyboard Shortcuts")
+        menu_bar.Append(help_menu, "&Help")
+
+        self.SetMenuBar(menu_bar)
+
+        # Bind menu events
+        self.Bind(wx.EVT_MENU, self.on_menu_export, id=ID_EXPORT)
+        self.Bind(wx.EVT_MENU, lambda e: self.Close(), id=wx.ID_EXIT)
+        self.Bind(wx.EVT_MENU, lambda e: self.safe_handle_scan_all_stocks(e), id=ID_SCAN)
+        self.Bind(wx.EVT_MENU, lambda e: self.safe_handle_show_elliott_wave(e), id=ID_WAVE)
+        self.Bind(wx.EVT_MENU, lambda e: self.safe_handle_run_backtest(e), id=ID_BACKTEST)
+        self.Bind(wx.EVT_MENU, lambda e: self.safe_handle_analyze_current_position(e), id=ID_POSITION)
+        self.Bind(wx.EVT_MENU, lambda e: self.safe_handle_load_scan(e), id=ID_LOAD_SCAN)
+        self.Bind(wx.EVT_MENU, lambda e: self.safe_handle_crawl_data(e), id=ID_FETCH_ALL)
+        self.Bind(wx.EVT_MENU, lambda e: self._fetch_subset(e, "listed"), id=ID_FETCH_US)
+        self.Bind(wx.EVT_MENU, lambda e: self._fetch_subset(e, "otc"), id=ID_FETCH_TW)
+        self.Bind(wx.EVT_MENU, self._on_validate_data, id=ID_VALIDATE)
+        self.Bind(wx.EVT_MENU, self.on_menu_about, id=ID_ABOUT)
+        self.Bind(wx.EVT_MENU, self.on_menu_shortcuts, id=ID_SHORTCUTS)
+
+        # Store IDs for enable/disable
+        self._menu_action_ids = [ID_SCAN, ID_WAVE, ID_BACKTEST, ID_POSITION, ID_LOAD_SCAN]
+
+    def _fetch_subset(self, event, subset):
+        """Set combo1 to *subset* then trigger crawl."""
+        self.combo1.SetValue(subset)
+        self.safe_handle_crawl_data(event)
+
+    def _on_validate_data(self, event):
+        """Run data validation script."""
+        import subprocess, sys
+        script = Path(__file__).resolve().parent.parent / 'scripts' / 'validate_data.py'
+        self.update_status("Validating data...", 0)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                capture_output=True, text=True, timeout=120,
+            )
+            output = result.stdout + result.stderr
+            self.output.AppendText(f"\n{'='*50}\nData Validation Results\n{'='*50}\n")
+            self.output.AppendText(output + "\n")
+            self.notebook.SetSelection(2)  # Switch to Log tab
+        except Exception as e:
+            wx.MessageBox(f"Validation failed: {e}", "Error", wx.OK | wx.ICON_ERROR)
+        self.update_status("Ready", 0)
+
+    # ------------------------------------------------------------------
+    # Status bar
+    # ------------------------------------------------------------------
+    def _create_status_bar(self):
+        """Create status bar with progress gauge."""
+        self.status_bar = self.CreateStatusBar(3)
+        self.status_bar.SetStatusWidths([-60, -25, -15])
+        self.status_bar.SetStatusText("Ready", 0)
+
+        self.progress_gauge = wx.Gauge(self.status_bar, range=100, size=(120, 16))
+        # Position gauge inside field 1 (on_resize also calls _reposition_gauge)
+        self._reposition_gauge()
+
+    def _reposition_gauge(self):
+        """Place the progress gauge inside status bar field 1."""
+        try:
+            rect = self.status_bar.GetFieldRect(1)
+            self.progress_gauge.SetPosition((rect.x + 2, rect.y + 2))
+            self.progress_gauge.SetSize((rect.width - 4, rect.height - 4))
+        except Exception:
+            pass
+
+    def _on_frame_size_for_gauge(self, event):
+        """Keep gauge positioned when the frame resizes."""
+        self._reposition_gauge()
+        event.Skip()
+
+    # ------------------------------------------------------------------
+    # Resize
+    # ------------------------------------------------------------------
+    def _get_canvas_figsize(self):
+        """Return (width_inches, height_inches) that fits the chart panel."""
+        dpi = self.canvas.figure.get_dpi() or 100
+        cs = self.chart_panel.GetClientSize()
+        w = max(4, cs.width / dpi)
+        h = max(3, cs.height / dpi)
+        return w, h
+
+    def _fit_figure_to_canvas(self, fig=None):
+        """Resize *fig* (default: self.canvas.figure) to fill the chart panel."""
+        if fig is None:
+            fig = self.canvas.figure
+        w, h = self._get_canvas_figsize()
+        fig.set_size_inches(w, h)
+        try:
+            fig.tight_layout(pad=1.5)
+        except Exception:
+            pass
+        if fig is not self.canvas.figure:
+            self.canvas.figure = fig
+        self.canvas.SetSize(self.chart_panel.GetClientSize())
+        self.canvas.draw_idle()
+
     def on_resize(self, event):
         try:
             self.panel.Layout()
-            new_size = self.panel.GetClientSize()
-            if new_size.width > 0 and new_size.height > 0:
-                self.canvas.SetSize(new_size)
-                fig_width = max(6, new_size.width / 100)
-                fig_height = max(4, new_size.height / 150)
-                if hasattr(self, 'canvas') and hasattr(self.canvas, 'figure'):
-                    self.canvas.figure.set_size_inches(fig_width, fig_height)
-                    self.canvas.figure.tight_layout(pad=2.0, rect=[0.05, 0.15, 0.95, 0.95])
-                    self.canvas.figure.subplots_adjust(bottom=0.2, left=0.1, right=0.95, top=0.9)
-                    self.canvas.draw()
+            self._reposition_gauge()
+            if hasattr(self, 'canvas') and self.canvas and hasattr(self.canvas, 'figure'):
+                self._fit_figure_to_canvas()
             event.Skip()
         except Exception as e:
             logger.error(f"Error in resize handler: {e}")
             event.Skip()
+
+    # ------------------------------------------------------------------
+    # Helpers carried over from original
+    # ------------------------------------------------------------------
     def multi_path_build(self):
         for folder in ['data/raw', 'models', 'htmls', 'data/lists/adjustments']:
             os.makedirs(os.path.join(self.root, folder), exist_ok=True)
+
     def get_stock_list(self):
         symbols = []
         try:
             if Path(self.config['international_file']).exists():
                 symbols += list(pd.read_csv(self.config['international_file'])['code'])
-            else:
-                self.output.AppendText(f"Warning: {self.config['international_file']} not found.\n")
         except Exception as e:
-            self.output.AppendText(f"Error loading international.txt: {e}\n")
+            logger.debug(f"Error loading international.txt: {e}")
         try:
             if Path(self.config['list_file']).exists():
                 symbols += list(pd.read_excel(self.config['list_file'])['code'].astype(str))
-            else:
-                self.output.AppendText(f"Warning: {self.config['list_file']} not found.\n")
         except Exception as e:
-            self.output.AppendText(f"Error loading list.xlsx: {e}\n")
+            logger.debug(f"Error loading list.xlsx: {e}")
         try:
             if Path(self.config['otclist_file']).exists():
                 symbols += list(pd.read_excel(self.config['otclist_file'])['code'].astype(str))
-            else:
-                self.output.AppendText(f"Warning: {self.config['otclist_file']} not found.\n")
         except Exception as e:
-            self.output.AppendText(f"Error loading otclist.xlsx: {e}\n")
+            logger.debug(f"Error loading otclist.xlsx: {e}")
         symbols.append('TWII')
         return sorted(set(symbols))
+
+    # ------------------------------------------------------------------
+    # Event handlers (output / plot / buttons)
+    # ------------------------------------------------------------------
     def on_update_output(self, event):
         try:
             if hasattr(event, 'message'):
                 self.output.AppendText(event.message)
         except Exception as e:
             logger.error(f"Error updating output: {e}")
+
     def on_update_plot(self, event):
         try:
             if hasattr(event, 'figure'):
-                self.canvas.figure = event.figure
-                self.canvas.draw()
+                self._fit_figure_to_canvas(event.figure)
+                self.notebook.SetSelection(1)  # Switch to Chart tab
         except Exception as e:
             logger.error(f"Error updating plot: {e}")
+
     def on_enable_buttons(self, event):
         """Handle EnableButtonsEvent from threaded handlers."""
         try:
@@ -185,16 +511,30 @@ class MyFrame(wx.Frame):
                 self.enable_buttons(event.enable)
         except Exception as e:
             logger.error(f"Error enabling buttons: {e}")
+
     def enable_buttons(self, enabled=True):
         try:
-            buttons = [self.crawl_button, self.backtest_button, self.plot_button,
-                      self.current_pos_button, self.scan_button, self.load_scan_button]
+            buttons = [
+                self.crawl_button, self.backtest_button, self.plot_button,
+                self.current_pos_button, self.scan_button, self.load_scan_button,
+            ]
             for button in buttons:
                 if button:
                     button.Enable(enabled)
+            # Also toggle menu items
+            menu_bar = self.GetMenuBar()
+            if menu_bar:
+                for mid in self._menu_action_ids:
+                    mi = menu_bar.FindItemById(mid)
+                    if mi:
+                        mi.Enable(enabled)
             self.buttons_enabled = enabled
         except Exception as e:
             logger.error(f"Error toggling buttons: {e}")
+
+    # ------------------------------------------------------------------
+    # Safe handler wrappers (unchanged logic)
+    # ------------------------------------------------------------------
     def safe_handle_crawl_data(self, event):
         try:
             if not self.buttons_enabled:
@@ -204,6 +544,7 @@ class MyFrame(wx.Frame):
         except Exception as e:
             self.output.AppendText(f"Error in crawl data handler: {e}\n")
             self.enable_buttons(True)
+
     def safe_handle_run_backtest(self, event):
         try:
             if not self.buttons_enabled:
@@ -213,11 +554,13 @@ class MyFrame(wx.Frame):
         except Exception as e:
             self.output.AppendText(f"Error in backtest handler: {e}\n")
             self.enable_buttons(True)
+
     def safe_handle_show_elliott_wave(self, event):
         try:
             handle_show_elliott_wave(self, event)
         except Exception as e:
             self.output.AppendText(f"Error in Elliott Wave handler: {e}\n")
+
     def safe_handle_analyze_current_position(self, event):
         try:
             handle_analyze_current_position(self, event)
@@ -244,56 +587,650 @@ class MyFrame(wx.Frame):
         except Exception as e:
             self.output.AppendText(f"Error loading scan: {e}\n")
 
+    # ------------------------------------------------------------------
+    # Stock list search / filter
+    # ------------------------------------------------------------------
+    def _apply_filters(self):
+        """Apply both text search and action filter to the stock list."""
+        query = self.search_ctrl.GetValue().strip().upper()
+        action_filter = self.action_filter.GetStringSelection()
+
+        filtered = list(self.all_scan_items)
+
+        # Text filter
+        if query:
+            filtered = [
+                item for item in filtered
+                if query in self._item_symbol(item).upper()
+            ]
+
+        # Action filter
+        if action_filter and action_filter != "All":
+            buy_actions = ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')
+            hold_actions = ('HOLD', 'WAIT', 'SKIP', 'AVOID')
+
+            def matches_filter(item):
+                a = self._item_action(item)
+                if action_filter == "BUY":
+                    return a in buy_actions
+                elif action_filter == "WATCH":
+                    return a == "WATCH"
+                elif action_filter == "EXIT":
+                    return a == "EXIT"
+                elif action_filter == "HOLD":
+                    return a in hold_actions
+                return True
+            filtered = [item for item in filtered if matches_filter(item)]
+
+        self._populate_stocks_list(filtered)
+
+    def on_search(self, event):
+        self._apply_filters()
+
+    def _on_action_filter(self, event):
+        self._apply_filters()
+
+    @staticmethod
+    def _item_symbol(item):
+        """Extract symbol from an item (dict or tuple)."""
+        if isinstance(item, dict):
+            return item.get('symbol', '')
+        if isinstance(item, (list, tuple)) and len(item) > 0:
+            return str(item[0])
+        return str(item)
+
+    @staticmethod
+    def _item_action(item):
+        """Extract action from an item (dict or tuple)."""
+        if isinstance(item, dict):
+            return item.get('action', '')
+        if isinstance(item, (list, tuple)) and len(item) > 2:
+            return str(item[2])
+        return ''
+
+    def _populate_stocks_list(self, items):
+        """Display items in ListCtrl WITHOUT overwriting all_scan_items.
+
+        This is used for filtered views. The master list (all_scan_items) is
+        only set by _update_stocks_listbox during a full scan or cache load.
+        """
+        action_colors = {
+            'STRONG BUY': wx.Colour(0, 120, 0),
+            'BUY': wx.Colour(34, 139, 34),
+            'BUY DIP': wx.Colour(60, 160, 60),
+            'BUY CORRECTION': wx.Colour(80, 140, 80),
+            'WATCH': wx.Colour(180, 140, 0),
+            'EXIT': wx.Colour(200, 0, 0),
+            'AVOID': wx.Colour(150, 150, 150),
+            'HOLD': wx.Colour(100, 100, 160),
+            'WAIT': wx.Colour(120, 120, 120),
+            'SKIP': wx.Colour(180, 180, 180),
+        }
+        short_action_map = {
+            'STRONG BUY': 'S.BUY',
+            'BUY CORRECTION': 'BUY.C',
+            'BUY DIP': 'BUY.D',
+        }
+
+        self.stocks_list.DeleteAllItems()
+        for i, stock in enumerate(items):
+            if isinstance(stock, dict):
+                symbol = str(stock.get('symbol', ''))
+                score = stock.get('score', '')
+                action = stock.get('action', '')
+                conf = stock.get('conf', stock.get('confidence', 0))
+            elif isinstance(stock, (list, tuple)):
+                symbol = str(stock[0]) if len(stock) > 0 else ''
+                score = stock[1] if len(stock) > 1 else ''
+                action = stock[2] if len(stock) > 2 else ''
+                conf = stock[3] if len(stock) > 3 else ''
+            else:
+                continue
+
+            score_str = str(score) if score else ''
+            conf_str = f"{conf:.0%}" if isinstance(conf, (int, float)) and conf else str(conf) if conf else ''
+            short_action = short_action_map.get(action, action)
+
+            idx = self.stocks_list.InsertItem(i, symbol)
+            self.stocks_list.SetItem(idx, 1, score_str)
+            self.stocks_list.SetItem(idx, 2, str(short_action))
+            self.stocks_list.SetItem(idx, 3, conf_str)
+
+            color = action_colors.get(action)
+            if color:
+                self.stocks_list.SetItemTextColour(idx, color)
+
+            if action in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'):
+                font = self.stocks_list.GetFont().Bold()
+                item = self.stocks_list.GetItem(idx)
+                item.SetFont(font)
+                self.stocks_list.SetItem(item)
+
+        self.update_status(f"{self.stocks_list.GetItemCount()} stocks", 2)
+
+    # ------------------------------------------------------------------
+    # Stock selection
+    # ------------------------------------------------------------------
+    def on_stock_selected(self, event):
+        """Handle stock selection: update trade plan panel, show chart."""
+        try:
+            idx = event.GetIndex()
+            symbol = self.stocks_list.GetItemText(idx, 0)
+            if not symbol:
+                return
+
+            # --- Update trade plan panel ---
+            self._update_trade_plan(symbol)
+
+            # Set the combo box to this stock
+            self.combo_stock.SetValue(symbol)
+
+            # If we have a scanned timeframe, use that specific timeframe
+            if self.scanned_timeframe:
+                timeframe_to_chart = {
+                    'day': 'Candlestick (Day)',
+                    'week': 'Candlestick (Week)',
+                    'month': 'Candlestick (Month)',
+                }
+                chart_type_for_scan = timeframe_to_chart.get(
+                    self.scanned_timeframe, self.chart_type,
+                )
+                self.chart_type = chart_type_for_scan
+                self.combo_chart_type.SetValue(chart_type_for_scan)
+
+            # Switch to Chart tab
+            self.notebook.SetSelection(1)
+
+            # Show Elliott Wave for this stock
+            from gui.handlers import handle_show_elliott_wave
+            handle_show_elliott_wave(self, None)
+        except Exception as e:
+            self.output.AppendText(f"Error selecting stock: {e}\n")
+
+    def _update_trade_plan(self, symbol):
+        """Populate the trade plan panel from scan results."""
+        results = getattr(self, '_scan_results', {})
+        r = results.get(symbol)
+
+        if not r:
+            self.trade_header.SetLabel(f"{symbol}")
+            self.trade_details.SetLabel("No signal data. Run Scan first.")
+            self.trade_panel.Layout()
+            return
+
+        action = r.get('action', '?')
+        score = r.get('score', 0)
+        price = r.get('price', 0)
+
+        # Color the header based on action
+        action_colors = {
+            'STRONG BUY': wx.Colour(0, 120, 0),
+            'BUY': wx.Colour(34, 139, 34),
+            'BUY DIP': wx.Colour(60, 160, 60),
+            'BUY CORRECTION': wx.Colour(80, 140, 80),
+            'WATCH': wx.Colour(180, 140, 0),
+            'EXIT': wx.Colour(200, 0, 0),
+        }
+        color = action_colors.get(action, wx.Colour(60, 60, 60))
+
+        self.trade_header.SetLabel(f"{symbol}  {action}  (Score: {score})")
+        self.trade_header.SetForegroundColour(color)
+
+        # Build detail text
+        lines = []
+        if price:
+            lines.append(f"Price: ${price:.2f}   Wave: {r.get('wave', '?')}   Trend: {r.get('trend', '?')}")
+
+        stop = r.get('stop', 0)
+        t1 = r.get('target1', 0)
+        t2 = r.get('target2', 0)
+        rr = r.get('rr', 0)
+
+        if stop and t1:
+            risk_pct = abs(price - stop) / price * 100 if price else 0
+            lines.append(f"Entry: ${price:.2f}   Stop: ${stop:.2f} (-{risk_pct:.1f}%)")
+            lines.append(f"Target1: ${t1:.2f}   Target2: ${t2:.2f}")
+            lines.append(f"R:R  {rr:.1f} : 1")
+
+        # Tier 3: Trailing stop + position sizing
+        trailing = r.get('trailing_stop', 0)
+        size_mult = r.get('size_mult', 0)
+        size_note = r.get('size_note', '')
+        if trailing and size_mult:
+            lines.append(f"Trail: ${trailing:.2f} (2.5 ATR)   Position: {size_mult:.1f}x ({size_note})")
+
+        rsi = r.get('rsi', 0)
+        macd_cross = r.get('macd_cross', '-')
+        macd_dir = r.get('macd_hist_dir', '')
+        adx_val = r.get('adx', 0)
+        adx_reg = r.get('adx_regime', '')
+        speed = r.get('speed', '?')
+        macd_str = f"{macd_cross or '-'}"
+        if macd_dir:
+            macd_str += f" ({macd_dir})"
+        adx_str = f"{adx_val:.0f}"
+        if adx_reg:
+            adx_str += f" ({adx_reg})"
+        lines.append(f"RSI: {rsi:.0f}  MACD: {macd_str}  ADX: {adx_str}  Speed: {speed}")
+
+        # Volume info
+        vol_ratio = r.get('vol_ratio', 0)
+        vol_score = r.get('volume_score', 0)
+        vel_acc = r.get('vel_accel', '')
+        vol_parts = []
+        if vol_ratio:
+            vol_label = 'confirmed' if vol_ratio >= 1.0 else 'weak'
+            vol_parts.append(f"Volume: {vol_ratio:.1f}x avg ({vol_label})")
+        if vel_acc and vel_acc != 'flat':
+            vel_label = vel_acc.replace('_', ' ')
+            vol_parts.append(f"Momentum: {vel_label}")
+        if vol_parts:
+            lines.append("  ".join(vol_parts))
+
+        reason = r.get('reason', '')
+        if reason:
+            lines.append(f"{reason}")
+
+        self.trade_details.SetLabel("\n".join(lines))
+        self.trade_panel.Layout()
+
+    # ------------------------------------------------------------------
+    # Auto-load last scan
+    # ------------------------------------------------------------------
     def auto_load_last_scan(self):
-        """Automatically load last scan results on startup"""
+        """Show last scan info on startup with stale warning."""
         try:
             cache_info = self.scan_cache.get_cache_info()
             if cache_info and cache_info['exists']:
-                self.output.AppendText(f"\n{'='*70}\n")
-                self.output.AppendText(f"LAST SCAN AVAILABLE\n")
-                self.output.AppendText(f"{'='*70}\n")
-                self.output.AppendText(f"Timestamp: {cache_info['age_formatted']}\n")
-                self.output.AppendText(f"Timeframe: {cache_info['timeframe']}\n")
-                self.output.AppendText(f"Patterns found: {cache_info['patterns_found']}/{cache_info['total_scanned']}\n")
-                self.output.AppendText(f"\nClick 'Load Last Scan' to restore results\n")
-                self.output.AppendText(f"{'='*70}\n\n")
+                age = cache_info.get('age_formatted', 'unknown')
+                patterns = cache_info.get('patterns_found', 0)
+                total = cache_info.get('total_scanned', 0)
+
+                # Check staleness
+                age_hours = cache_info.get('age_hours', 0)
+                stale_warning = ""
+                if age_hours > 24:
+                    stale_warning = f"\n  WARNING: Scan is {age_hours:.0f}h old — consider re-scanning!\n"
+
+                self.output.AppendText(f"\nLast scan: {age} | {patterns}/{total} patterns found\n")
+                if stale_warning:
+                    self.output.AppendText(stale_warning)
+                self.output.AppendText("Press Ctrl+L to load last scan, or Ctrl+S to run new scan.\n\n")
+
+                self.update_status(f"Last scan: {age}", 0)
         except Exception as e:
-            # Silent fail - not critical
             logger.debug(f"Auto-load check failed: {e}")
 
-    def on_stock_selected(self, event):
-        """Handle stock selection from the listbox"""
+    # ------------------------------------------------------------------
+    # Status / progress helpers
+    # ------------------------------------------------------------------
+    def update_status(self, text, field=0):
+        """Update status bar text."""
+        wx.CallAfter(self.status_bar.SetStatusText, text, field)
+
+    def update_progress(self, current, total):
+        """Update progress gauge and text."""
+        pct = int(current / total * 100) if total > 0 else 0
+        wx.CallAfter(self.progress_gauge.SetValue, pct)
+        wx.CallAfter(self.status_bar.SetStatusText, f"{current}/{total}", 1)
+
+    def reset_progress(self):
+        """Reset progress gauge."""
+        wx.CallAfter(self.progress_gauge.SetValue, 0)
+        wx.CallAfter(self.status_bar.SetStatusText, "", 1)
+
+    # ------------------------------------------------------------------
+    # Dashboard
+    # ------------------------------------------------------------------
+    def update_dashboard(self, scan_results=None):
+        """Update dashboard with trader-focused signal summary using HTML tables."""
         try:
-            selection = self.stocks_list.GetStringSelection()
-            if selection:
-                # Extract stock symbol from the display string (format: "SYMBOL (confidence%)")
-                symbol = selection.split()[0]
-                # Set the combo box to this stock
-                self.combo_stock.SetValue(symbol)
+            if scan_results is None:
+                return
 
-                # If we have a scanned timeframe, use that specific timeframe
-                # Otherwise use the current chart type
-                if self.scanned_timeframe:
-                    # Map timeframe back to chart type
-                    timeframe_to_chart = {
-                        'day': 'Candlestick (Day)',
-                        'week': 'Candlestick (Week)',
-                        'month': 'Candlestick (Month)'
-                    }
-                    chart_type_for_scan = timeframe_to_chart.get(self.scanned_timeframe, self.chart_type)
+            if isinstance(scan_results, list):
+                scan_results = {'results': scan_results, 'total_scanned': len(scan_results)}
 
-                    # Temporarily set chart type to match scan
-                    original_chart_type = self.chart_type
-                    self.chart_type = chart_type_for_scan
-                    self.combo_chart_type.SetValue(chart_type_for_scan)
+            results = scan_results.get('results', scan_results.get('stocks', []))
+            buys = scan_results.get('buys', [r for r in results if r.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')])
+            watches = scan_results.get('watches', [r for r in results if r.get('action') == 'WATCH'])
+            exits = scan_results.get('exits', [r for r in results if r.get('action') == 'EXIT'])
+            holds = [r for r in results if r.get('action') in ('HOLD', 'WAIT')]
+            avoids = [r for r in results if r.get('action') in ('AVOID', 'SKIP')]
+            regime = scan_results.get('market_regime', '')
+            regime_msg = scan_results.get('regime_msg', '')
+            total_scanned = scan_results.get('total_scanned', len(results))
+            scan_time = scan_results.get('scan_time', '')
 
-                    self.output.AppendText(f"Displaying {symbol} using scanned timeframe: {self.scanned_timeframe}\n")
+            H = []  # HTML accumulator
+            H.append("<html><body>")
 
-                # Automatically show Elliott Wave for this stock
-                from gui.handlers import handle_show_elliott_wave
-                handle_show_elliott_wave(self, None)
+            # ── HEADER ──
+            H.append("<h2>Signal Dashboard</h2>")
+            if scan_time:
+                H.append(f"<font color='#888' size='2'>{scan_time}</font>")
+
+            # ── MARKET REGIME ──
+            if regime:
+                regime_html = {
+                    'FAVORABLE': ("<table bgcolor='#d5f5e3' width='100%'><tr><td>"
+                                  "<b>FAVORABLE</b> -- Markets healthy, normal entries OK"
+                                  "</td></tr></table>"),
+                    'MIXED': ("<table bgcolor='#fef9e7' width='100%'><tr><td>"
+                              "<b>!! MIXED !!</b> -- Selective entries only -- "
+                              "raise conviction bar (score &gt; 75)"
+                              "</td></tr></table>"),
+                    'CAUTION': ("<table bgcolor='#fdedec' width='100%'><tr><td>"
+                                "<font color='#c0392b'><b>XX CAUTION XX</b></font> -- "
+                                "Market overheated -- protect positions, tighten stops, "
+                                "wait for regime to improve"
+                                "</td></tr></table>"),
+                    'UNKNOWN': ("<table bgcolor='#fef9e7' width='100%'><tr><td>"
+                                "<b>?? UNKNOWN ??</b> -- "
+                                "Loaded from cache -- re-scan for live regime"
+                                "</td></tr></table>"),
+                }
+                H.append(regime_html.get(regime, f"<p>{regime}</p>"))
+
+            # ── SIGNAL DISTRIBUTION ──
+            n_other = len(holds) + len(avoids)
+            H.append("<table cellpadding='4'><tr>")
+            H.append(f"<td><b>Scanned:</b> {total_scanned}</td>")
+            H.append(f"<td><b>Analyzed:</b> {len(results)}</td>")
+            H.append(f"<td bgcolor='#27ae60'><font color='#fff'><b>BUY {len(buys)}</b></font></td>")
+            H.append(f"<td bgcolor='#f39c12'><font color='#fff'><b>WATCH {len(watches)}</b></font></td>")
+            H.append(f"<td bgcolor='#e74c3c'><font color='#fff'><b>EXIT {len(exits)}</b></font></td>")
+            H.append(f"<td bgcolor='#95a5a6'><font color='#fff'><b>OTHER {n_other}</b></font></td>")
+            H.append("</tr></table>")
+
+            # ── SIGNAL QUALITY SUMMARY ──
+            if buys:
+                buy_scores = [r.get('score', 0) for r in buys]
+                avg_score = sum(buy_scores) / len(buy_scores)
+                max_score = max(buy_scores)
+                strong = sum(1 for s in buy_scores if s >= 75)
+                vol_confirmed = sum(1 for r in buys if r.get('vol_ratio', 0) >= 1.0)
+                trend_strong = sum(1 for r in buys if r.get('adx_regime') == 'strong_trend')
+
+                H.append("<table cellpadding='3'><tr>")
+                H.append(f"<td bgcolor='#ecf0f1'>Avg Score <b>{avg_score:.0f}</b></td>")
+                H.append(f"<td bgcolor='#ecf0f1'>Best <b>{max_score}</b></td>")
+                H.append(f"<td bgcolor='#ecf0f1'>Strong (75+) <b>{strong}</b></td>")
+                H.append(f"<td bgcolor='#ecf0f1'>Vol Confirmed <b>{vol_confirmed}/{len(buys)}</b></td>")
+                H.append(f"<td bgcolor='#ecf0f1'>Trend Strong <b>{trend_strong}/{len(buys)}</b></td>")
+                H.append("</tr></table>")
+
+            # ── BUY CANDIDATES (ALL) ──
+            if buys:
+                H.append(f"<h3>BUY Candidates ({len(buys)})</h3>")
+                H.append("<table border='1' cellpadding='4' cellspacing='0' width='100%'>")
+                H.append("<tr bgcolor='#2c3e50'>"
+                         "<th><font color='#fff'>Symbol</font></th>"
+                         "<th><font color='#fff'>Action</font></th>"
+                         "<th align='right'><font color='#fff'>Score</font></th>"
+                         "<th align='right'><font color='#fff'>Price</font></th>"
+                         "<th align='right'><font color='#fff'>Stop</font></th>"
+                         "<th align='right'><font color='#fff'>Target 1</font></th>"
+                         "<th align='right'><font color='#fff'>Target 2</font></th>"
+                         "<th align='right'><font color='#fff'>Trail</font></th>"
+                         "<th align='right'><font color='#fff'>R:R</font></th>"
+                         "<th align='right'><font color='#fff'>Risk%</font></th>"
+                         "<th><font color='#fff'>Wave</font></th>"
+                         "<th align='right'><font color='#fff'>Vol</font></th>"
+                         "<th><font color='#fff'>Trend</font></th>"
+                         "<th align='right'><font color='#fff'>RSI</font></th>"
+                         "<th align='right'><font color='#fff'>Size</font></th>"
+                         "<th><font color='#fff'>Note</font></th>"
+                         "</tr>")
+                for idx, r in enumerate(buys):
+                    sym = r.get('symbol', '')
+                    action = r.get('action', '')
+                    score = r.get('score', 0)
+                    price = r.get('price', 0)
+                    stop = r.get('stop', 0)
+                    t1 = r.get('target1', 0)
+                    t2 = r.get('target2', 0)
+                    trail = r.get('trailing_stop', 0)
+                    rr = r.get('rr', 0)
+                    risk_pct = abs(price - stop) / price * 100 if price else 0
+                    wave = r.get('wave', '?')
+                    vr = r.get('vol_ratio', 1.0)
+                    adx_r = r.get('adx_regime', '')
+                    trend_str = adx_r.replace('_', ' ') if adx_r else r.get('trend', '')
+                    rsi = r.get('rsi', 0)
+                    size = r.get('size_mult', 0)
+                    s_note = r.get('size_note', '')
+
+                    # Color coding
+                    score_color = '#1a7a42' if score >= 75 else '#b7950b' if score >= 55 else '#c0392b'
+                    vol_color = '#1a7a42' if vr >= 1.0 else '#c0392b' if vr < 0.5 else '#666'
+                    rr_color = '#1a7a42' if rr >= 2.0 else '#b7950b' if rr >= 1.0 else '#c0392b'
+                    row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
+
+                    H.append(
+                        f"<tr bgcolor='{row_bg}'>"
+                        f"<td><b>{sym}</b></td>"
+                        f"<td>{action}</td>"
+                        f"<td align='right'><font color='{score_color}'><b>{score}</b></font></td>"
+                        f"<td align='right'>${price:.2f}</td>"
+                        f"<td align='right'>${stop:.2f}</td>"
+                        f"<td align='right'>${t1:.2f}</td>"
+                        f"<td align='right'>${t2:.2f}</td>"
+                        f"<td align='right'>${trail:.2f}</td>"
+                        f"<td align='right'><font color='{rr_color}'>{rr:.1f}x</font></td>"
+                        f"<td align='right'>{risk_pct:.1f}%</td>"
+                        f"<td>W{wave}</td>"
+                        f"<td align='right'><font color='{vol_color}'>{vr:.1f}x</font></td>"
+                        f"<td>{trend_str}</td>"
+                        f"<td align='right'>{rsi:.0f}</td>"
+                        f"<td align='right'>{size:.1f}x</td>"
+                        f"<td><font color='#666' size='1'>{s_note}</font></td>"
+                        f"</tr>"
+                    )
+                H.append("</table>")
+
+            # ── WATCH LIST (ALL) ──
+            if watches:
+                H.append(f"<h3>Watch List ({len(watches)})</h3>")
+                H.append("<table border='1' cellpadding='4' cellspacing='0' width='100%'>")
+                H.append("<tr bgcolor='#2c3e50'>"
+                         "<th><font color='#fff'>Symbol</font></th>"
+                         "<th align='right'><font color='#fff'>Score</font></th>"
+                         "<th align='right'><font color='#fff'>Price</font></th>"
+                         "<th align='right'><font color='#fff'>Stop</font></th>"
+                         "<th align='right'><font color='#fff'>Target 1</font></th>"
+                         "<th align='right'><font color='#fff'>R:R</font></th>"
+                         "<th align='right'><font color='#fff'>RSI</font></th>"
+                         "<th><font color='#fff'>Wave</font></th>"
+                         "<th align='right'><font color='#fff'>Vol</font></th>"
+                         "<th><font color='#fff'>Missing</font></th>"
+                         "</tr>")
+                for idx, r in enumerate(watches):
+                    missing = []
+                    if not r.get('entry_ok', False):
+                        missing.append('momentum')
+                    if r.get('rr', 0) < 2.0:
+                        missing.append('R:R')
+                    if r.get('conf', 0) < 0.25:
+                        missing.append('confidence')
+                    if r.get('exit_warn', False):
+                        missing.append('no exit warn')
+                    if r.get('vol_ratio', 1.0) < 0.5:
+                        missing.append('volume')
+                    if r.get('adx_regime') == 'no_trend':
+                        missing.append('trend strength')
+                    if r.get('w5_reversal_warn'):
+                        missing.append('W5 exhaustion')
+                    needs = ', '.join(missing) if missing else 'regime change'
+
+                    sym = r.get('symbol', '')
+                    score = r.get('score', 0)
+                    price = r.get('price', 0)
+                    stop = r.get('stop', 0)
+                    t1 = r.get('target1', 0)
+                    rr = r.get('rr', 0)
+                    rsi = r.get('rsi', 0)
+                    wave = r.get('wave', '?')
+                    vr = r.get('vol_ratio', 1.0)
+                    row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
+
+                    H.append(
+                        f"<tr bgcolor='{row_bg}'>"
+                        f"<td><b>{sym}</b></td>"
+                        f"<td align='right'>{score}</td>"
+                        f"<td align='right'>${price:.2f}</td>"
+                        f"<td align='right'>${stop:.2f}</td>"
+                        f"<td align='right'>${t1:.2f}</td>"
+                        f"<td align='right'>{rr:.1f}x</td>"
+                        f"<td align='right'>{rsi:.0f}</td>"
+                        f"<td>W{wave}</td>"
+                        f"<td align='right'>{vr:.1f}x</td>"
+                        f"<td><font color='#c0392b'>{needs}</font></td>"
+                        f"</tr>"
+                    )
+                H.append("</table>")
+
+            # ── EXIT ALERTS (ALL) ──
+            if exits:
+                H.append(f"<h3>Exit Alerts ({len(exits)})</h3>")
+                H.append("<table border='1' cellpadding='4' cellspacing='0' width='100%'>")
+                H.append("<tr bgcolor='#2c3e50'>"
+                         "<th><font color='#fff'>Symbol</font></th>"
+                         "<th align='right'><font color='#fff'>Price</font></th>"
+                         "<th align='right'><font color='#fff'>RSI</font></th>"
+                         "<th align='right'><font color='#fff'>6M %</font></th>"
+                         "<th><font color='#fff'>Wave</font></th>"
+                         "<th><font color='#fff'>Reason</font></th>"
+                         "</tr>")
+                for idx, r in enumerate(exits):
+                    sym = r.get('symbol', '')
+                    price = r.get('price', 0)
+                    rsi = r.get('rsi', 0)
+                    mom6 = r.get('mom_6m', 0)
+                    wave = r.get('wave', '?')
+                    mom_color = '#1a7a42' if mom6 > 0 else '#c0392b'
+                    row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
+                    H.append(
+                        f"<tr bgcolor='{row_bg}'>"
+                        f"<td><b>{sym}</b></td>"
+                        f"<td align='right'>${price:.2f}</td>"
+                        f"<td align='right'>{rsi:.0f}</td>"
+                        f"<td align='right'><font color='{mom_color}'>{mom6:+.1f}%</font></td>"
+                        f"<td>W{wave}</td>"
+                        f"<td><font color='#e74c3c'>Exit warning</font></td>"
+                        f"</tr>"
+                    )
+                H.append("</table>")
+
+            # ── NO SIGNALS ──
+            if not buys and not watches:
+                H.append("<h3>No Buy Signals Right Now</h3>")
+                H.append("<p>This is normal and protective. The system only signals when:</p>")
+                H.append("<ul>")
+                H.append("<li>Wave structure confirms trend (impulse pattern)</li>")
+                H.append("<li>Trend is bullish (SMA50 &gt; SMA200)</li>")
+                H.append("<li>Momentum confirms entry (RSI + MACD + ADX)</li>")
+                H.append("<li>Risk/reward ratio is favorable (&gt; 1.5:1)</li>")
+                H.append("</ul>")
+                if regime == 'CAUTION':
+                    H.append("<p><font color='#c0392b'><b>Current regime is CAUTION</b> -- "
+                             "most stocks show exit signals. Patience protects capital.</font></p>")
+                H.append("<p><b>Next steps:</b> Monitor WATCH list daily | "
+                         "Tighten stops | Re-scan when regime improves (Ctrl+S)</p>")
+
+            # ── TOP MOMENTUM ──
+            movers = sorted(
+                [r for r in results if r.get('mom_6m', 0) > 10 and r.get('trend') == 'bullish'],
+                key=lambda x: x.get('mom_6m', 0),
+                reverse=True,
+            )[:15]
+            if movers:
+                H.append("<h3>Strongest Momentum</h3>")
+                H.append("<table border='1' cellpadding='4' cellspacing='0' width='100%'>")
+                H.append("<tr bgcolor='#2c3e50'>"
+                         "<th><font color='#fff'>Symbol</font></th>"
+                         "<th align='right'><font color='#fff'>Price</font></th>"
+                         "<th align='right'><font color='#fff'>6M %</font></th>"
+                         "<th><font color='#fff'>Wave</font></th>"
+                         "<th><font color='#fff'>Action</font></th>"
+                         "</tr>")
+                for idx, r in enumerate(movers):
+                    sym = r.get('symbol', '')
+                    price = r.get('price', 0)
+                    mom6 = r.get('mom_6m', 0)
+                    wave = r.get('wave', '?')
+                    action = r.get('action', '')
+                    row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
+                    H.append(
+                        f"<tr bgcolor='{row_bg}'>"
+                        f"<td><b>{sym}</b></td>"
+                        f"<td align='right'>${price:.2f}</td>"
+                        f"<td align='right'><font color='#1a7a42'>{mom6:+.1f}%</font></td>"
+                        f"<td>W{wave}</td>"
+                        f"<td>{action}</td>"
+                        f"</tr>"
+                    )
+                H.append("</table>")
+
+            # ── SCAN AGE WARNING ──
+            last_scan = getattr(self, '_last_scan_time', None)
+            if last_scan:
+                from datetime import datetime
+                age_hours = (datetime.now() - last_scan).total_seconds() / 3600
+                if age_hours > 24:
+                    H.append(f"<p><font color='#c0392b'><b>Scan is {age_hours:.0f}h old</b> "
+                             f"-- prices may have changed. Re-scan with Ctrl+S</font></p>")
+
+            H.append("<p><font color='#888' size='2'>Click any stock in the list "
+                     "to see chart + trade plan</font></p>")
+            H.append("</body></html>")
+
+            self.dashboard_html.SetPage("".join(H))
         except Exception as e:
-            self.output.AppendText(f"Error selecting stock: {e}\n")
+            logger.error(f"Error updating dashboard: {e}")
+
+    # ------------------------------------------------------------------
+    # Menu action handlers
+    # ------------------------------------------------------------------
+    def on_menu_export(self, event):
+        """Export results to JSON file."""
+        import json
+        with wx.FileDialog(
+            self, "Export Results", wildcard="JSON files (*.json)|*.json",
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+        ) as dlg:
+            if dlg.ShowModal() == wx.ID_CANCEL:
+                return
+            path = dlg.GetPath()
+            try:
+                with open(path, 'w') as f:
+                    json.dump(self.all_scan_items, f, indent=2, default=str)
+                self.update_status(f"Exported to {path}", 0)
+            except Exception as e:
+                wx.MessageBox(f"Export failed: {e}", "Error", wx.OK | wx.ICON_ERROR)
+
+    def on_menu_about(self, event):
+        """Show about dialog."""
+        info = wx.adv.AboutDialogInfo()
+        info.SetName("Fintech-sys")
+        info.SetVersion("2.0")
+        info.SetDescription("Elliott Wave Trading System\nAdvanced stock analysis with multi-timeframe pattern detection.")
+        wx.adv.AboutBox(info)
+
+    def on_menu_shortcuts(self, event):
+        """Show keyboard shortcuts dialog."""
+        shortcuts = (
+            "Keyboard Shortcuts\n"
+            "----------------------------\n"
+            "Ctrl+S   Scan All Stocks\n"
+            "Ctrl+E   Show Elliott Wave\n"
+            "Ctrl+B   Run Backtest\n"
+            "Ctrl+P   Analyze Position\n"
+            "Ctrl+L   Load Last Scan\n"
+            "Ctrl+Q   Quit\n"
+            "Ctrl+Shift+E   Export Results\n"
+        )
+        wx.MessageBox(shortcuts, "Keyboard Shortcuts", wx.OK | wx.ICON_INFORMATION)
     def _fix_date_labels(self, ax, data_df):
         """Fix date label formatting and layout issues."""
         try:
@@ -440,13 +1377,13 @@ class MyFrame(wx.Frame):
                 gridaxis='both'
             )
             
-            # Get current figure size
-            fig_width, fig_height = self.figure.get_size_inches()
-            
+            # Use canvas-fitted figure size
+            fig_w, fig_h = self._get_canvas_figsize()
+
             # Create the plot
             confidence = wave_data.get('confidence', 0.0)
             title = f"{self.chart_type} for {symbol} - Elliott Wave (Confidence: {confidence:.2f})"
-            
+
             try:
                 fig, axes = mpf.plot(
                     df_ohlc,
@@ -454,7 +1391,7 @@ class MyFrame(wx.Frame):
                     style=style,
                     title=title,
                     volume=True,
-                    figsize=tuple(self.figure.get_size_inches()),
+                    figsize=(fig_w, fig_h),
                     panel_ratios=(4, 1),
                     addplot=additional_plots if additional_plots else None,
                     returnfig=True,
@@ -463,18 +1400,15 @@ class MyFrame(wx.Frame):
                     tight_layout=True,
                     show_nontrading=False
                 )
-                
-                # Get axes
+
                 price_ax = axes[0]
-                volume_ax = axes[1] if len(axes) > 1 else None
-                
+
                 # Add annotations for Elliott Wave points
                 self._add_elliott_wave_annotations(price_ax, df, df_ohlc, wave_data)
-                
-                # Update canvas
-                self.canvas.figure = fig
+
+                # Fit to canvas
                 self.ax = price_ax
-                self.canvas.draw()
+                self._fit_figure_to_canvas(fig)
                 
             except Exception as plot_error:
                 self.output.AppendText(f"mplfinance plot error: {plot_error}\n")
@@ -728,7 +1662,7 @@ class MyFrame(wx.Frame):
         
         # Fix date labels
         self._fix_date_labels(self.ax, df)
-        self.canvas.draw()
+        self._fit_figure_to_canvas()
 
     def _plot_line_elliott_wave_enhanced(self, df, wave_data, symbol):
         """Enhanced line plotting for Elliott Wave analysis."""
@@ -742,7 +1676,7 @@ class MyFrame(wx.Frame):
             self.ax.legend()
             self.ax.grid(True, alpha=0.3)
             self._fix_date_labels(self.ax, df)
-            self.canvas.draw()
+            self._fit_figure_to_canvas()
             if hasattr(self, 'output'):
                 self.output.AppendText("No valid Elliott Wave pattern found for this data.\n")
             return
@@ -751,7 +1685,7 @@ class MyFrame(wx.Frame):
             title=f"Elliott Wave Analysis for {symbol}", ax=self.ax
         )
         self._fix_date_labels(self.ax, df)
-        self.canvas.draw()
+        self._fit_figure_to_canvas()
 
     def _plot_candlestick_elliott_wave_enhanced(self, df, wave_data, symbol):
         """Enhanced candlestick plotting with comprehensive Elliott Wave analysis."""
@@ -765,18 +1699,18 @@ class MyFrame(wx.Frame):
             self.ax.legend()
             self.ax.grid(True, alpha=0.3)
             self._fix_date_labels(self.ax, df)
-            self.canvas.draw()
+            self._fit_figure_to_canvas()
             if hasattr(self, 'output'):
                 self.output.AppendText("No valid Elliott Wave pattern found for this data.\n")
             return
-        
+
         # Use the existing enhanced plotting function
         plot_elliott_wave_analysis_enhanced(
             df, wave_data, column='close',
             title=f"Elliott Wave Analysis for {symbol}", ax=self.ax
         )
         self._fix_date_labels(self.ax, df)
-        self.canvas.draw()
+        self._fit_figure_to_canvas()
 
     def _plot_line_elliott_wave_multiple(self, df, wave_data, symbol):
         """CORRECTED: Plot line chart with multiple timeframe Elliott Wave patterns"""
@@ -827,11 +1761,10 @@ class MyFrame(wx.Frame):
             ax.grid(True, alpha=0.3)
             
             plt.xticks(rotation=45)
-            plt.tight_layout()
-            
+
             # Update canvas
-            self.canvas.draw()
-            
+            self._fit_figure_to_canvas()
+
         except Exception as e:
             self.output.AppendText(f"Error in corrected multiple pattern line plot: {e}\n")
             import traceback
@@ -894,12 +1827,10 @@ class MyFrame(wx.Frame):
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
             ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
             plt.xticks(rotation=45)
-            
-            plt.tight_layout()
-            
+
             # Update canvas
-            self.canvas.draw()
-            
+            self._fit_figure_to_canvas()
+
         except Exception as e:
             self.output.AppendText(f"Error in multiple pattern candlestick plot: {e}\n")
             import traceback
@@ -933,26 +1864,20 @@ class MyFrame(wx.Frame):
         
         # Create subplots based on number of patterns (max 3 panels)
         num_patterns = min(len(multiple_patterns), 3)
-        fig, axes = plt.subplots(num_patterns, 1, figsize=(15, 5 * num_patterns))
-        
+
+        # Use canvas size instead of hardcoded figsize
+        fig_w, fig_h = self._get_canvas_figsize()
+        fig, axes = plt.subplots(num_patterns, 1, figsize=(fig_w, fig_h))
+
         if num_patterns == 1:
             axes = [axes]
-        
-        # Clear the current canvas
-        self.canvas.figure.clf()
-        
+
         for i, pattern in enumerate(multiple_patterns[:3]):
             ax = axes[i] if num_patterns > 1 else axes[0]
-            
-            # Get the timeframe-specific data range
             timeframe_data = self._get_timeframe_specific_data(df, pattern, symbol)
-            
-            # Plot this specific timeframe
             self._plot_single_timeframe_pattern(ax, timeframe_data, pattern, i == 0)
-        
-        plt.tight_layout()
-        self.canvas.figure = fig
-        self.canvas.draw()
+
+        self._fit_figure_to_canvas(fig)
 
     def _get_timeframe_specific_data(self, df: pd.DataFrame, pattern: Dict[str, Any], symbol: str) -> Dict[str, Any]:
         """Get data specific to this timeframe for better visualization"""
@@ -1130,6 +2055,6 @@ class MyFrame(wx.Frame):
         
         ax.set_title(f'{symbol} - Elliott Wave Analysis', fontsize=16, fontweight='bold')
         ax.axis('off')
-        self.canvas.draw()
+        self._fit_figure_to_canvas()
 
     

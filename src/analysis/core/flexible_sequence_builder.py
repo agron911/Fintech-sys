@@ -1,12 +1,13 @@
+import logging
 import numpy as np
 import pandas as pd
 import itertools
 from typing import Tuple, List, Dict, Any, Optional, Set
 from dataclasses import dataclass, field
 import warnings
-import hashlib
-from functools import lru_cache
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore')
 
 class PatternRelationship(Enum):
@@ -304,6 +305,7 @@ class FlexibleSequenceBuilder:
             score += quality_metrics.get('quality_score', 0)
             details['quality_metrics'] = quality_metrics
         except Exception as e:
+            logger.warning(f"Wave sequence scoring failed, using fallback score: {e}")
             details['scoring_error'] = str(e)
             score = 0.1
         return score, details
@@ -388,58 +390,6 @@ class FlexibleSequenceBuilder:
             sequence[i][1] != sequence[i+1][1] 
             for i in range(len(sequence) - 1)
         )
-
-class PatternCache:
-    def __init__(self):
-        self.cache = {}
-    def get_cache_key(self, df: pd.DataFrame, params: Dict) -> str:
-        """Generate unique key for caching"""
-        data_hash = hashlib.md5(df.to_json().encode()).hexdigest()[:8]
-        param_hash = hashlib.md5(str(sorted(params.items())).encode()).hexdigest()[:8]
-        return f"{data_hash}_{param_hash}"
-    @staticmethod
-    @lru_cache(maxsize=100)
-    def detect_patterns_cached(cache_key: str, *args, **kwargs):
-        """Cached pattern detection. Implement your detection logic here or call the actual detection function."""
-        # Example: return expensive_detection_function(*args, **kwargs)
-        pass
-
-class PatternTracker:
-    def __init__(self):
-        self.patterns = []
-    def record_pattern(self, symbol: str, wave_data: Dict, timestamp: pd.Timestamp):
-        """Record detected pattern for future validation"""
-        pattern_record = {
-            'symbol': symbol,
-            'timestamp': timestamp,
-            'wave_points': wave_data['impulse_wave'],
-            'confidence': wave_data['confidence'],
-            'wave_type': wave_data['wave_type'],
-            'predicted_next': self._predict_next_move(wave_data)
-        }
-        self.patterns.append(pattern_record)
-    def validate_predictions(self, df: pd.DataFrame, lookback_days: int = 30):
-        """Check how accurate past predictions were"""
-        results = []
-        for pattern in self.patterns:
-            if (pd.Timestamp.now() - pattern['timestamp']).days > lookback_days:
-                actual_move = self._get_actual_move(df, pattern)
-                accuracy = self._calculate_accuracy(pattern['predicted_next'], actual_move)
-                results.append({
-                    'pattern': pattern,
-                    'accuracy': accuracy,
-                    'actual_vs_predicted': (actual_move, pattern['predicted_next'])
-                })
-        return results
-    def _predict_next_move(self, wave_data: Dict):
-        # Stub: implement your prediction logic based on wave_data
-        return None
-    def _get_actual_move(self, df: pd.DataFrame, pattern: Dict):
-        # Stub: implement logic to get actual move after pattern timestamp
-        return None
-    def _calculate_accuracy(self, predicted, actual):
-        # Stub: implement accuracy calculation
-        return None
 
 def build_wave_sequence_enhanced(df: pd.DataFrame, 
                                labeled_points: List[Tuple[int, str]], 
