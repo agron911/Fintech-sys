@@ -624,8 +624,9 @@ class TestATRAdaptiveExits:
 
         bt._partial_close(entry_date, pd.Timestamp('2024-01-15'), 115.0,
                           50, 'partial', 90_000.0)
-        # Stop should be at breakeven (entry * 1.007)
-        assert bt.open_positions[entry_date]['stop_loss'] >= 100.0 * 1.007
+        # Stop should be at breakeven (entry * (1 + round_trip_pct))
+        expected_breakeven = 100.0 * (1 + bt.cost_model.round_trip_pct())
+        assert bt.open_positions[entry_date]['stop_loss'] >= expected_breakeven
 
     def test_sortino_ratio_calculated(self):
         """Stats should include sortino_ratio."""

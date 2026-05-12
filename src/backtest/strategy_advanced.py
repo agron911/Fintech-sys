@@ -137,15 +137,18 @@ class MultiTimeframeAlignmentStrategy:
         """
         self.config = config
         self.alignment_threshold = config.get('alignment_threshold', 0.40)
-        self.fib_tolerance = config.get('fibonacci_tolerance', 0.05)  # Tightened from 0.15
+        self.fib_tolerance = config.get('fibonacci_tolerance', 0.10)
         self.volume_mult = config.get('volume_multiplier', 1.2)
         self.stop_loss_pct = config.get('stop_loss_pct', 0.02)
         self.profit_targets = config.get('profit_targets', [2.0, 3.0, 4.0])
 
         # PHASE 1: Confidence filtering configuration
         self.use_confidence_filters = config.get('use_confidence_filters', True)
-        self.min_composite_confidence = config.get('min_composite_confidence', 0.35)
-        self.min_validation_confidence = config.get('min_validation_confidence', 0.30)
+        self.min_composite_confidence = config.get('min_composite_confidence', 0.20)
+        self.min_validation_confidence = config.get('min_validation_confidence', 0.20)
+
+        # Skip correction-wave trades (Wave 4/5/6) — impulse waves are 16x more efficient
+        self.skip_correction_trades = config.get('skip_correction_trades', True)
 
         # Statistics tracking for Phase 1
         self.filter_stats = {
@@ -250,6 +253,8 @@ class MultiTimeframeAlignmentStrategy:
 
                             # Generate BUY signal with velocity-adjusted stop
                             base_stop = self._calculate_stop_loss(price, wave_pos)
+                            if base_stop >= price:
+                                base_stop = price * 0.95
                             # Widen stop in volatile regimes, tighten in calm
                             stop_loss = price - (price - base_stop) * stop_mult
 
@@ -275,6 +280,7 @@ class MultiTimeframeAlignmentStrategy:
                                 'wave_number': wave_pos['wave_number'],
                                 'alignment': alignment,
                                 'confidence': base_conf,
+                                'targets': self._compute_signal_targets(wave_pos, price, wave_pos['wave_number']),
                             }
 
                             # PHASE 1 GATE 2: Validate signal before adding
@@ -289,6 +295,8 @@ class MultiTimeframeAlignmentStrategy:
 
                 # --- MOMENTUM EXIT: Any wave, if RSI collapses from overbought ---
                 elif momentum_exit_warn and wave_num >= 3:
+                    if self.skip_correction_trades and wave_num >= 4:
+                        continue
                     # Check for rapid RSI decline (momentum crash)
                     if i >= 5:
                         rsi_5_ago = rsi_series.iloc[i - 5] if not np.isnan(rsi_series.iloc[i - 5]) else 50
@@ -307,6 +315,8 @@ class MultiTimeframeAlignmentStrategy:
 
                 # --- Wave 5/6: SELL exits or correction-bottom BUY ---
                 elif wave_num in [5, 6]:
+                    if self.skip_correction_trades:
+                        continue
                     avg_volume = df[vol_col].iloc[max(0, i-20):i].mean()
                     if avg_volume <= 0:
                         continue
@@ -339,6 +349,7 @@ class MultiTimeframeAlignmentStrategy:
                                                 'confidence': 0.5 + fib_ratio * 0.3,
                                                 'entry_type': 'correction_bottom',
                                                 'fib_level': fib_ratio,
+                                                'targets': [impulse_end, impulse_end + impulse_range * 0.618],
                                             }
                                             if self.use_confidence_filters:
                                                 if self._check_validation_confidence_filter(df, pattern_analysis, signal):
@@ -486,6 +497,31 @@ class MultiTimeframeAlignmentStrategy:
 
         return min(alignment_score + wave_score + volume_score, 1.0)
 
+    def _compute_signal_targets(self, wave_pos: Dict, entry_price: float,
+                                wave_num: int) -> List[float]:
+        """Compute Fibonacci-based profit targets to embed in signal."""
+        targets = []
+        wave_1_range = wave_pos.get('wave_1_range', 0)
+        if wave_1_range <= 0:
+            return targets
+
+        if wave_num == 3:
+            wave_2_end = wave_pos.get('wave_2_end', entry_price)
+            targets = [
+                wave_2_end + wave_1_range * 1.618,
+                wave_2_end + wave_1_range * 2.618,
+            ]
+        elif wave_num == 1:
+            targets = [entry_price + wave_1_range * 0.618]
+        elif wave_num == 5:
+            wave_4_end = wave_pos.get('wave_4_end', entry_price)
+            targets = [
+                wave_4_end + wave_1_range * 0.618,
+                wave_4_end + wave_1_range * 1.0,
+            ]
+
+        return [t for t in targets if t > entry_price * 1.01]
+
     # ========================================================================
     # PHASE 1: Confidence Filtering Methods
     # ========================================================================
@@ -626,7 +662,7 @@ class FibonacciMeanReversionStrategy:
         """
         self.config = config
         self.fib_levels = config.get('fib_entry_levels', [0.382, 0.618, 0.786])
-        self.fib_tolerance = config.get('fibonacci_tolerance', 0.05)  # Tightened from 0.15
+        self.fib_tolerance = config.get('fibonacci_tolerance', 0.10)
         self.stop_loss_pct = config.get('stop_loss_pct', 0.015)
         self.volume_decline_threshold = config.get('volume_decline', 0.7)
 
@@ -785,6 +821,12 @@ class PatternBreakoutStrategy:
         return min(alignment_score + volume_score, 1.0)
 
 
+def detect_market(symbol: str) -> str:
+    """Detect market from symbol: numeric = TW, alphabetic = US."""
+    clean = str(symbol).strip().replace('.TW', '').replace('.TWO', '')
+    return 'TW' if clean.isdigit() else 'US'
+
+
 class TransactionCostModel:
     """Models realistic trading friction: commissions, taxes, slippage."""
 
@@ -800,6 +842,17 @@ class TransactionCostModel:
         self.commission_rate = commission_rate
         self.sell_tax_rate = sell_tax_rate
         self.slippage_rate = slippage_rate
+
+    @classmethod
+    def for_market(cls, market: str) -> 'TransactionCostModel':
+        """Factory: return cost model with sensible defaults for the given market."""
+        if market == 'US':
+            return cls(commission_rate=0.0, sell_tax_rate=0.0, slippage_rate=0.0003)
+        return cls()  # TW defaults
+
+    def round_trip_pct(self) -> float:
+        """Total estimated cost for a buy+sell round trip, as a fraction."""
+        return self.commission_rate * 2 + self.sell_tax_rate + self.slippage_rate * 2
 
     def buy_cost(self, price: float, shares: int) -> float:
         notional = price * shares
@@ -847,12 +900,18 @@ class AdvancedBacktester:
             max_risk_per_trade=self.config.get('risk_per_trade', 0.02)
         )
 
-        # Transaction cost model (default: Taiwan TWSE)
-        self.cost_model = TransactionCostModel(
-            commission_rate=self.config.get('commission_rate', 0.001425),
-            sell_tax_rate=self.config.get('sell_tax_rate', 0.003),
-            slippage_rate=self.config.get('slippage_rate', 0.001),
-        )
+        # Transaction cost model (market-aware: US vs TW)
+        market = self.config.get('market', 'US')
+        if any(k in self.config for k in ('commission_rate', 'sell_tax_rate', 'slippage_rate')):
+            # Explicit overrides take precedence
+            defaults = TransactionCostModel.for_market(market)
+            self.cost_model = TransactionCostModel(
+                commission_rate=self.config.get('commission_rate', defaults.commission_rate),
+                sell_tax_rate=self.config.get('sell_tax_rate', defaults.sell_tax_rate),
+                slippage_rate=self.config.get('slippage_rate', defaults.slippage_rate),
+            )
+        else:
+            self.cost_model = TransactionCostModel.for_market(market)
 
         # Portfolio drawdown tracking
         self.peak_capital = initial_capital
@@ -893,30 +952,47 @@ class AdvancedBacktester:
 
         logger.info(f"Generated {len(signals)} signals for {strategy_name}")
 
-        # Simulate trading
+        for signal in signals:
+            if signal['type'] == 'BUY' and 'targets' not in signal:
+                signal['targets'] = self._compute_wave_targets(signal, pattern_analysis)
+
+        return self.simulate(df, signals)
+
+    def simulate(self, df: pd.DataFrame, signals: List[Dict]) -> Dict:
+        """
+        Simulate trading with pre-generated signals.
+
+        Used by both run_backtest (single-pattern) and walk-forward backtesting.
+        Signals must include 'date', 'type', 'price', 'stop_loss', and optionally
+        'targets', 'wave_number', 'confidence', 'alignment'.
+        """
+        logger.info(f"Simulating with {len(signals)} signals")
+
+        self.trades = []
+        self.equity_curve = []
+        self.open_positions = {}
+        self.total_costs = 0
+
         current_capital = self.initial_capital
         self.risk_manager.current_capital = current_capital
+        self.risk_manager.peak_capital = current_capital
+        self.risk_manager.open_positions = []
         self.risk_manager.reset_daily()
 
-        # Build signal lookup by date for O(1) access
         signal_map = {}
         for signal in signals:
             signal_map.setdefault(signal['date'], []).append(signal)
 
         last_entry_date = None
 
-        # Iterate over EVERY bar — exits must be checked daily, not just on signal dates
         for bar_idx in range(len(df)):
             date = df.index[bar_idx]
 
-            # Check exits FIRST (before processing new entries)
             if self.open_positions:
                 current_capital = self._check_exits(df, date, current_capital)
 
-            # Process signals for this date
             for signal in signal_map.get(date, []):
                 if signal['type'] == 'BUY':
-                    # Cooldown: skip if we opened a position within the last 5 bars
                     if last_entry_date is not None:
                         try:
                             last_idx = df.index.get_loc(last_entry_date)
@@ -925,14 +1001,12 @@ class AdvancedBacktester:
                         except (KeyError, TypeError):
                             pass
 
-                    # Portfolio drawdown circuit breaker
                     self.peak_capital = max(self.peak_capital, current_capital)
                     portfolio_dd = 1.0 - (current_capital / self.peak_capital) if self.peak_capital > 0 else 0
                     if portfolio_dd >= 0.15:
-                        continue  # Hard halt: no new entries in severe drawdown
+                        continue
 
                     if self.risk_manager.can_open_position():
-                        # Wave-aware position sizing
                         wave_metrics = WavePositionMetrics(
                             wave_number=signal.get('wave_number', 3),
                             wave_type='impulse',
@@ -943,7 +1017,6 @@ class AdvancedBacktester:
                             fibonacci_confluence=3,
                         )
 
-                        # Half risk when in moderate drawdown (10-15%)
                         if portfolio_dd >= 0.10:
                             wave_metrics.confidence *= 0.5
 
@@ -955,12 +1028,10 @@ class AdvancedBacktester:
                                 signal['price'], signal['stop_loss']
                             )
 
-                        # Open position
                         position_value = shares * signal['price']
 
-                        if position_value <= current_capital * 0.4:  # Max 40% per position
-                            # Compute wave-based targets from pattern analysis
-                            targets = self._compute_wave_targets(signal, pattern_analysis)
+                        if position_value <= current_capital * 0.4:
+                            targets = signal.get('targets', [])
 
                             position = {
                                 'entry_date': signal['date'],
@@ -972,7 +1043,8 @@ class AdvancedBacktester:
                                 'targets': targets,
                             }
 
-                            self.open_positions[signal['date']] = position
+                            pos_key = f"{signal['date']}_{len(self.open_positions)}"
+                            self.open_positions[pos_key] = position
                             self.risk_manager.open_positions.append(position)
                             buy_cost = self.cost_model.buy_cost(signal['price'], shares)
                             current_capital -= position_value + buy_cost
@@ -982,7 +1054,6 @@ class AdvancedBacktester:
                             logger.info(f"Opened position: {shares} shares @ ${signal['price']:.2f} (cost: ${buy_cost:.2f})")
 
                 elif signal['type'] == 'SELL':
-                    # SELL signal: close open positions (profit-taking / wave completion)
                     if self.open_positions:
                         sell_reason = signal.get('sell_reason', 'sell_signal')
                         for entry_date in list(self.open_positions.keys()):
@@ -991,12 +1062,10 @@ class AdvancedBacktester:
                                 sell_reason, current_capital
                             )
 
-        # Close any remaining positions at end
         if len(df) > 0:
             current_capital = self._close_all_positions(df.index[-1], df['close'].iloc[-1], current_capital)
 
-        # Calculate statistics
-        return self._calculate_statistics()
+        return self._calculate_statistics(df)
 
     def _check_exits(self, df: pd.DataFrame, current_date, current_capital: float) -> float:
         """Check for exit conditions on open positions using ATR-adaptive trailing stops."""
@@ -1071,9 +1140,9 @@ class AdvancedBacktester:
                 if trailing_stop > position['stop_loss']:
                     position['stop_loss'] = trailing_stop
 
-                # Also move to breakeven after 1.5R profit (1.007 covers TW round-trip costs ~0.685%)
+                # Also move to breakeven after 1.5R profit (cover round-trip costs)
                 if profit_per_share >= risk_per_share * 1.5:
-                    position['stop_loss'] = max(position['stop_loss'], entry_price * 1.007)
+                    position['stop_loss'] = max(position['stop_loss'], entry_price * (1 + self.cost_model.round_trip_pct()))
 
             # 3. Partial profit-taking at first Fibonacci target
             targets = position.get('targets', [])
@@ -1156,7 +1225,7 @@ class AdvancedBacktester:
         current_capital += exit_price * shares_to_close - sell_cost
 
         # Move stop to breakeven on remaining shares after partial profit taken
-        position['stop_loss'] = max(position['stop_loss'], position['entry_price'] * 1.007)
+        position['stop_loss'] = max(position['stop_loss'], position['entry_price'] * (1 + self.cost_model.round_trip_pct()))
 
         logger.info(f"Partial close: {shares_to_close} shares @ ${exit_price:.2f} - P/L: ${profit:.2f} ({reason})")
         return current_capital
@@ -1201,6 +1270,7 @@ class AdvancedBacktester:
         current_capital += exit_price * position['shares'] - sell_cost
         self.risk_manager.update_capital(current_capital)
         self.position_manager.update_portfolio_value(current_capital)
+        self.wave_sizer.portfolio_value = current_capital
 
         # Remove from open positions
         del self.open_positions[entry_date]
@@ -1252,8 +1322,10 @@ class AdvancedBacktester:
         targets = [t for t in targets if t > entry_price * 1.01]
         return targets
 
-    def _calculate_statistics(self) -> Dict:
-        """Calculate comprehensive backtest statistics."""
+    def _calculate_statistics(self, df: pd.DataFrame = None) -> Dict:
+        """Calculate comprehensive backtest statistics with buy-and-hold benchmark."""
+        buy_hold = self._compute_buy_hold(df) if df is not None and len(df) > 1 else {}
+
         if not self.trades:
             return {
                 'initial_capital': self.initial_capital,
@@ -1271,7 +1343,8 @@ class AdvancedBacktester:
                 'profit_factor': 0,
                 'avg_r_multiple': 0,
                 'max_drawdown_pct': 0,
-                'sharpe_ratio': 0
+                'sharpe_ratio': 0,
+                **buy_hold,
             }
 
         trades_df = pd.DataFrame(self.trades)
@@ -1329,7 +1402,52 @@ class AdvancedBacktester:
         stats['total_costs'] = self.total_costs
         stats['trades'] = self.trades
 
+        stats.update(buy_hold)
+        if 'buy_hold_return_pct' in buy_hold:
+            stats['alpha'] = stats['total_return_pct'] - buy_hold['buy_hold_return_pct']
+
+        stats['wave_breakdown'] = self._wave_breakdown(trades_df)
+
         return stats
+
+    def _compute_buy_hold(self, df: pd.DataFrame) -> Dict:
+        """Compute buy-and-hold benchmark for comparison."""
+        first_price = df['close'].iloc[0]
+        last_price = df['close'].iloc[-1]
+        total_days = (df.index[-1] - df.index[0]).days
+        years = max(total_days / 365.25, 0.1)
+
+        bh_return = (last_price / first_price - 1) * 100
+        bh_annual = ((last_price / first_price) ** (1.0 / years) - 1) * 100
+
+        bh_equity = df['close'] / first_price * self.initial_capital
+        bh_peak = bh_equity.cummax()
+        bh_dd = ((bh_peak - bh_equity) / bh_peak).max() * 100
+
+        return {
+            'buy_hold_return_pct': bh_return,
+            'buy_hold_annual_pct': bh_annual,
+            'buy_hold_max_dd_pct': bh_dd,
+            'backtest_years': round(years, 1),
+        }
+
+    def _wave_breakdown(self, trades_df: pd.DataFrame) -> Dict:
+        """Break down trade performance by wave number."""
+        breakdown = {}
+        if 'wave_number' not in trades_df.columns:
+            return breakdown
+        for wave_num, group in trades_df.groupby('wave_number'):
+            if wave_num is None:
+                continue
+            wins = group[group['profit'] > 0]
+            breakdown[int(wave_num)] = {
+                'trades': len(group),
+                'win_rate': len(wins) / len(group) if len(group) > 0 else 0,
+                'total_profit': float(group['profit'].sum()),
+                'avg_profit': float(group['profit'].mean()),
+                'avg_r': float(group['r_multiple'].mean()) if 'r_multiple' in group.columns else 0,
+            }
+        return breakdown
 
     def _max_consecutive(self, df: pd.DataFrame, column: str, condition) -> int:
         """Calculate maximum consecutive occurrences of a condition."""

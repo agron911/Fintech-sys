@@ -228,9 +228,8 @@ def test_fetch_data_invalid_symbol(mock_download, test_config):
 
     df = fetch_stock_data('INVALID', '', '2024-01-01', '2024-01-03')
 
-    # Should return empty DataFrame
-    assert df is not None
-    assert df.empty
+    # Should return None for invalid/empty data
+    assert df is None
 
 
 @pytest.mark.unit

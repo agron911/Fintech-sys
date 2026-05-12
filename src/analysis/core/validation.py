@@ -16,7 +16,7 @@ class ValidationConfig:
     wave3_min_ratio: float = 1.0
     overlap_allowed: bool = False
     acceptance_threshold: float = 0.3
-    reality_adjustment: float = 0.85
+    reality_adjustment: float = 0.92
     
     # Confidence weights
     direction_weight: float = 0.3

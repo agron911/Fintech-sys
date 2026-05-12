@@ -1,0 +1,17 @@
+[
+  {
+    "symbol": "2901",
+    "date_range_start": "2004-09-21 00:00:00",
+    "date_range_end": "2026-03-13 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 2.526211524718341,
+    "total_profit": 2526.211524718341,
+    "sharpe_ratio": 0.08514416235122312,
+    "max_drawdown_pct": 4.518014505312485,
+    "total_trades": 229,
+    "win_rate": 0.462882096069869,
+    "profit_factor": 1.1101166767468524,
+    "initial_capital": 100000,
+    "final_capital": 102526.21152471834
+  }
+]

@@ -1,0 +1,415 @@
+[
+  {
+    "symbol": "AAPL",
+    "date_range_start": "2010-01-19 00:00:00",
+    "date_range_end": "2025-01-09 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 29.019990973680738,
+    "total_profit": 29019.990973680735,
+    "sharpe_ratio": 0.4246172034204101,
+    "max_drawdown_pct": 5.52433287497079,
+    "total_trades": 118,
+    "win_rate": 0.5254237288135594,
+    "profit_factor": 2.447593576853012,
+    "initial_capital": 100000,
+    "final_capital": 129019.99097368073,
+    "buy_hold_return_pct": 56.6901694865684,
+    "buy_hold_annual_pct": 2.4803564300784675,
+    "alpha": -27.670178512887663,
+    "backtest_years": 18.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 2,
+        "win_rate": 1.0,
+        "total_profit": 1452.0912075491215,
+        "avg_profit": 726.0456037745607,
+        "avg_r": 6.377364105856468
+      },
+      "3": {
+        "trades": 16,
+        "win_rate": 0.8125,
+        "total_profit": 25064.228743808206,
+        "avg_profit": 1566.5142964880129,
+        "avg_r": 3.8482035051932724
+      },
+      "6": {
+        "trades": 100,
+        "win_rate": 0.47,
+        "total_profit": 2503.6710223234018,
+        "avg_profit": 25.036710223234017,
+        "avg_r": 0.06623741831103262
+      }
+    }
+  },
+  {
+    "symbol": "MSFT",
+    "date_range_start": "2004-05-05 00:00:00",
+    "date_range_end": "2026-04-10 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 69.74990209818917,
+    "total_profit": 69749.90209818917,
+    "sharpe_ratio": 1.114737776619067,
+    "max_drawdown_pct": 3.7641440145886835,
+    "total_trades": 135,
+    "win_rate": 0.6666666666666666,
+    "profit_factor": 4.953378862966246,
+    "initial_capital": 100000,
+    "final_capital": 169749.90209818917,
+    "buy_hold_return_pct": 2011.6306167172309,
+    "buy_hold_annual_pct": 13.358268268761474,
+    "alpha": -1941.8807146190418,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 11,
+        "win_rate": 0.45454545454545453,
+        "total_profit": 2489.2987986236076,
+        "avg_profit": 226.29989078396432,
+        "avg_r": 4.296194873329981
+      },
+      "3": {
+        "trades": 21,
+        "win_rate": 0.8571428571428571,
+        "total_profit": 43346.932932687334,
+        "avg_profit": 2064.1396634613016,
+        "avg_r": 3.8993310555029796
+      },
+      "6": {
+        "trades": 103,
+        "win_rate": 0.6504854368932039,
+        "total_profit": 23913.670366878236,
+        "avg_profit": 232.17155695998287,
+        "avg_r": 1.014409913570948
+      }
+    }
+  },
+  {
+    "symbol": "NVDA",
+    "date_range_start": "2004-05-14 00:00:00",
+    "date_range_end": "2025-11-04 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 3.8654047665476,
+    "total_profit": 3865.4047665476,
+    "sharpe_ratio": 0.328650530019389,
+    "max_drawdown_pct": 7.904740869298053,
+    "total_trades": 129,
+    "win_rate": 0.6201550387596899,
+    "profit_factor": 1.1285303903672084,
+    "initial_capital": 100000,
+    "final_capital": 103865.4047665476,
+    "buy_hold_return_pct": 735.3276187656712,
+    "buy_hold_annual_pct": 9.11796383634913,
+    "alpha": -731.4622139991236,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 1,
+        "win_rate": 0.0,
+        "total_profit": -2142.166104988909,
+        "avg_profit": -2142.166104988909,
+        "avg_r": -1.404219593267787
+      },
+      "3": {
+        "trades": 16,
+        "win_rate": 0.75,
+        "total_profit": 4429.980294494613,
+        "avg_profit": 276.8737684059133,
+        "avg_r": 1.2509244338218808
+      },
+      "6": {
+        "trades": 112,
+        "win_rate": 0.6071428571428571,
+        "total_profit": 1577.5905770418958,
+        "avg_profit": 14.085630152159784,
+        "avg_r": 0.3516883107316846
+      }
+    }
+  },
+  {
+    "symbol": "AMD",
+    "date_range_start": "2003-11-21 00:00:00",
+    "date_range_end": "2026-02-24 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 44.696876482885884,
+    "total_profit": 44696.876482885884,
+    "sharpe_ratio": 0.8607743931150765,
+    "max_drawdown_pct": 2.7600479555892186,
+    "total_trades": 180,
+    "win_rate": 0.6333333333333333,
+    "profit_factor": 3.8429088996188043,
+    "initial_capital": 100000,
+    "final_capital": 144696.87648288588,
+    "buy_hold_return_pct": 1480.2279879435498,
+    "buy_hold_annual_pct": 12.015391912455687,
+    "alpha": -1435.5311114606639,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 5,
+        "win_rate": 1.0,
+        "total_profit": 7762.610359586335,
+        "avg_profit": 1552.522071917267,
+        "avg_r": 2.3703785484500264
+      },
+      "3": {
+        "trades": 33,
+        "win_rate": 0.9090909090909091,
+        "total_profit": 24278.093429748307,
+        "avg_profit": 735.6998009014638,
+        "avg_r": 2.3975351305400103
+      },
+      "6": {
+        "trades": 142,
+        "win_rate": 0.5563380281690141,
+        "total_profit": 12656.172693551238,
+        "avg_profit": 89.12797671514956,
+        "avg_r": 0.10410295938443008
+      }
+    }
+  },
+  {
+    "symbol": "GOOG",
+    "date_range_start": "2012-08-16 00:00:00",
+    "date_range_end": "2026-05-01 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 22.6612867341717,
+    "total_profit": 22661.2867341717,
+    "sharpe_ratio": 1.2208112399701665,
+    "max_drawdown_pct": 4.6956945479339085,
+    "total_trades": 81,
+    "win_rate": 0.7654320987654321,
+    "profit_factor": 2.1583246942433787,
+    "initial_capital": 100000,
+    "final_capital": 122661.2867341717,
+    "buy_hold_return_pct": 197.88848339200817,
+    "buy_hold_annual_pct": 7.320750226195427,
+    "alpha": -175.22719665783646,
+    "backtest_years": 15.4,
+    "wave_breakdown": {
+      "1": {
+        "trades": 4,
+        "win_rate": 0.5,
+        "total_profit": -3751.0440332668304,
+        "avg_profit": -937.7610083167076,
+        "avg_r": 1.3297443919587226
+      },
+      "3": {
+        "trades": 11,
+        "win_rate": 0.9090909090909091,
+        "total_profit": 7765.893893854789,
+        "avg_profit": 705.990353986799,
+        "avg_r": 1.064523584940033
+      },
+      "6": {
+        "trades": 66,
+        "win_rate": 0.7575757575757576,
+        "total_profit": 18646.43687358374,
+        "avg_profit": 282.5217708118749,
+        "avg_r": 1.8179390417343724
+      }
+    }
+  },
+  {
+    "symbol": "AMZN",
+    "date_range_start": "2003-09-29 00:00:00",
+    "date_range_end": "2008-07-02 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": -5.677880695922637,
+    "total_profit": -5677.880695922638,
+    "sharpe_ratio": 0.11063059690280937,
+    "max_drawdown_pct": 8.696218858504627,
+    "total_trades": 35,
+    "win_rate": 0.4,
+    "profit_factor": 0.5748998592146534,
+    "initial_capital": 100000,
+    "final_capital": 94322.11930407737,
+    "buy_hold_return_pct": 2481.1709754307253,
+    "buy_hold_annual_pct": 14.297787878721024,
+    "alpha": -2486.848856126648,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 2,
+        "win_rate": 1.0,
+        "total_profit": 786.899822992042,
+        "avg_profit": 393.449911496021,
+        "avg_r": 2.6260632303297493
+      },
+      "3": {
+        "trades": 3,
+        "win_rate": 0.6666666666666666,
+        "total_profit": 2522.708621089748,
+        "avg_profit": 840.9028736965826,
+        "avg_r": -0.3611203843538828
+      },
+      "6": {
+        "trades": 30,
+        "win_rate": 0.3333333333333333,
+        "total_profit": -8987.489140004429,
+        "avg_profit": -299.58297133348094,
+        "avg_r": -0.20378714496594316
+      }
+    }
+  },
+  {
+    "symbol": "NFLX",
+    "date_range_start": "2003-11-06 00:00:00",
+    "date_range_end": "2025-06-12 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 17.275723963366552,
+    "total_profit": 17275.723963366552,
+    "sharpe_ratio": 0.38512971390995204,
+    "max_drawdown_pct": 5.716556793226401,
+    "total_trades": 155,
+    "win_rate": 0.5870967741935483,
+    "profit_factor": 1.7166458868491403,
+    "initial_capital": 100000,
+    "final_capital": 117275.72396336656,
+    "buy_hold_return_pct": 1442.6455185732477,
+    "buy_hold_annual_pct": 11.90460778829905,
+    "alpha": -1425.3697946098812,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 7,
+        "win_rate": 1.0,
+        "total_profit": 4559.581694383931,
+        "avg_profit": 651.3688134834186,
+        "avg_r": 5.61535639401169
+      },
+      "3": {
+        "trades": 17,
+        "win_rate": 0.8235294117647058,
+        "total_profit": 16520.32353021851,
+        "avg_profit": 971.783737071677,
+        "avg_r": 2.120283819583012
+      },
+      "6": {
+        "trades": 131,
+        "win_rate": 0.5343511450381679,
+        "total_profit": -3804.181261235883,
+        "avg_profit": -29.039551612487656,
+        "avg_r": 0.22700413930484503
+      }
+    }
+  },
+  {
+    "symbol": "TSLA",
+    "date_range_start": "2003-08-19 00:00:00",
+    "date_range_end": "2025-08-12 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 21.8042495149116,
+    "total_profit": 21804.2495149116,
+    "sharpe_ratio": 0.6183956495592056,
+    "max_drawdown_pct": 3.4769244960283157,
+    "total_trades": 152,
+    "win_rate": 0.6447368421052632,
+    "profit_factor": 1.7852167348149566,
+    "initial_capital": 100000,
+    "final_capital": 121804.2495149116,
+    "buy_hold_return_pct": 2010.4243228165212,
+    "buy_hold_annual_pct": 13.355605458919516,
+    "alpha": -1988.6200733016096,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 10,
+        "win_rate": 1.0,
+        "total_profit": 4950.22952373733,
+        "avg_profit": 495.022952373733,
+        "avg_r": 3.602485432481939
+      },
+      "3": {
+        "trades": 26,
+        "win_rate": 0.8846153846153846,
+        "total_profit": 13540.605644914394,
+        "avg_profit": 520.7925248043998,
+        "avg_r": 2.2090204869512635
+      },
+      "6": {
+        "trades": 116,
+        "win_rate": 0.5603448275862069,
+        "total_profit": 3313.414346259879,
+        "avg_profit": 28.563916778102406,
+        "avg_r": 1.0330583272254699
+      }
+    }
+  },
+  {
+    "symbol": "JPM",
+    "date_range_start": "2003-11-25 00:00:00",
+    "date_range_end": "2005-10-26 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": -5.522386249409916,
+    "total_profit": -5522.386249409916,
+    "sharpe_ratio": -1.6594362608215363,
+    "max_drawdown_pct": 5.522386249409945,
+    "total_trades": 18,
+    "win_rate": 0.3333333333333333,
+    "profit_factor": 0.17166746449957282,
+    "initial_capital": 100000,
+    "final_capital": 94477.61375059008,
+    "buy_hold_return_pct": 1373.129579027372,
+    "buy_hold_annual_pct": 11.69269283561154,
+    "alpha": -1378.651965276782,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "3": {
+        "trades": 2,
+        "win_rate": 0.5,
+        "total_profit": -583.6232427529811,
+        "avg_profit": -291.81162137649056,
+        "avg_r": -0.14595734111281888
+      },
+      "6": {
+        "trades": 16,
+        "win_rate": 0.3125,
+        "total_profit": -4938.7630066569345,
+        "avg_profit": -308.6726879160584,
+        "avg_r": -0.6128549164707681
+      }
+    }
+  },
+  {
+    "symbol": "META",
+    "date_range_start": "2003-08-25 00:00:00",
+    "date_range_end": "2014-09-22 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": -5.2215134211454535,
+    "total_profit": -5221.513421145453,
+    "sharpe_ratio": -0.28239930142705655,
+    "max_drawdown_pct": 7.032901026609985,
+    "total_trades": 79,
+    "win_rate": 0.43037974683544306,
+    "profit_factor": 0.6457055188568608,
+    "initial_capital": 100000,
+    "final_capital": 94778.48657885454,
+    "buy_hold_return_pct": 393.11193869731807,
+    "buy_hold_annual_pct": 6.779043695972464,
+    "alpha": -398.3334521184635,
+    "backtest_years": 24.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 4,
+        "win_rate": 1.0,
+        "total_profit": 1584.6615720463242,
+        "avg_profit": 396.16539301158105,
+        "avg_r": 2.634035645263529
+      },
+      "3": {
+        "trades": 6,
+        "win_rate": 0.5,
+        "total_profit": -3576.2512493802315,
+        "avg_profit": -596.0418748967053,
+        "avg_r": 0.4749692730679393
+      },
+      "6": {
+        "trades": 69,
+        "win_rate": 0.391304347826087,
+        "total_profit": -3229.9237438115456,
+        "avg_profit": -46.810489040747036,
+        "avg_r": -0.24295112402112423
+      }
+    }
+  }
+]

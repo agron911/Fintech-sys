@@ -94,67 +94,38 @@ def delete_files():
 
 
 def save_stock_data(df, stock_code, folder=None, long_tail=False):
-    _ensure_init()
-    if folder is None:
-        folder = save_file_path
-    # Ensure the folder exists
-    folder.mkdir(parents=True, exist_ok=True)
-    
-    # Flatten MultiIndex columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df.copy()
+    """Save stock data to TSV file.
 
-    # Ensure we have the required columns after flattening
-    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        logger.warning(f"Missing columns after MultiIndex flattening: {missing_cols}")
-        # If columns are still missing, this might be random data - skip column validation
-        # Just save whatever we have
-        df['Date'] = df.index
-        if long_tail:
-            df.to_csv(folder / f"{stock_code}_long_tail.txt", sep="\t", index=False)
-        else:
-            df.to_csv(folder / f"{stock_code}.txt", sep="\t", index=False)
+    Delegates to YahooFinanceCrawler for consistent formatting.
+    The long_tail parameter appends '_long_tail' to the filename.
+    """
+    _ensure_init()
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        logger.warning(f"Cannot save empty data for {stock_code}")
         return
 
-    # Insert 'Date' as the first column (from index)
-    df['Date'] = df.index
-    # Reorder columns and duplicate 'Date' at the end
-    df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-    df['Date_end'] = df['Date'].astype(str)
-    df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Date_end']]
-    df.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Date']
-    if long_tail:
-        df.to_csv(folder / f"{stock_code}_long_tail.txt", sep="\t", index=False)
-    else:
-        df.to_csv(folder / f"{stock_code}.txt", sep="\t", index=False)
+    target_dir = folder if folder is not None else save_file_path
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    crawler = YahooFinanceCrawler(config)
+    original_data_dir = crawler.data_dir
+    crawler.data_dir = target_dir
+
+    save_symbol = f"{stock_code}_long_tail" if long_tail else stock_code
+    crawler.save_data(df, save_symbol)
+    crawler.data_dir = original_data_dir
 
 
 def fetch_stock_data(stock_code, suffix, start, end):
-    try:
-        logger.info(f"{stock_code}{suffix}")
-        df = yf.download(f"{stock_code}{suffix}", start=start, end=end, auto_adjust=True)
+    """Fetch stock data from Yahoo Finance.
 
-        # Check if DataFrame is empty
-        if df is None or df.empty:
-            logger.info(f"No data returned for {stock_code}{suffix}")
-            return df  # Return empty DataFrame (not None) to match expected behavior
-
-        df = df.drop(columns=["Adj Close"], errors="ignore")
-
-        # Only format date index if it's a DatetimeIndex
-        if isinstance(df.index, pd.DatetimeIndex):
-            df.index = df.index.strftime("%Y/%m/%d , %r")
-            df.index = df.index.str.split(",").str[0]
-
-        df["Date"] = df.index
-        return df
-    except Exception as e:
-        logger.info(f"Error fetching data for {stock_code}: {e}")
-        traceback.print_exc()
-        return None
+    Delegates to YahooFinanceCrawler for consistent date formatting and retry logic.
+    """
+    _ensure_init()
+    crawler = YahooFinanceCrawler(config)
+    df = crawler.fetch_data(stock_code, str(start), str(end), suffix=suffix)
+    return df
 
 
 def crawl_all_ch():
@@ -227,9 +198,8 @@ class YahooFinanceCrawler(BaseCrawler):
         self.logger = logging.getLogger(__name__)
         self.data_dir = Path(config['stk2_dir'])
 
-    @retry(stop_max_attempt_number=3, wait_fixed=2000)
     def fetch_data(self, symbol: str, start: str, end: str, suffix: str = "") -> pd.DataFrame:
-        """Fetch data for a symbol. If suffix is provided it will be appended to the symbol
+        """Fetch data for a symbol with retry on network errors.
 
         Args:
             symbol: base ticker symbol (e.g. '1295')
@@ -242,18 +212,20 @@ class YahooFinanceCrawler(BaseCrawler):
         """
         symbol_with_suffix = f"{symbol}{suffix}" if suffix else symbol
         try:
-            self.logger.info(f"Fetching data for {symbol_with_suffix} from {start} to {end}")
-            df = yf.download(symbol_with_suffix, start=start, end=end, progress=False, auto_adjust=True)
-
+            df = self._fetch_with_retry(symbol_with_suffix, start, end)
             if df is None or df.empty:
                 self.logger.warning(f"No data returned for {symbol_with_suffix}")
                 return None
-
             return self.clean_data(df)
         except Exception as e:
             self.logger.error(f"Error fetching data for {symbol_with_suffix}: {e}")
-            traceback.print_exc()
             return None
+
+    @retry(stop_max_attempt_number=3, wait_fixed=2000)
+    def _fetch_with_retry(self, symbol_with_suffix: str, start: str, end: str) -> pd.DataFrame:
+        """Inner fetch that allows retry decorator to work on network errors."""
+        self.logger.info(f"Fetching data for {symbol_with_suffix} from {start} to {end}")
+        return yf.download(symbol_with_suffix, start=start, end=end, progress=False, auto_adjust=True)
 
     def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:

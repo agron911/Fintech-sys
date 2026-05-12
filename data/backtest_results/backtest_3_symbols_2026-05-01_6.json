@@ -1,0 +1,47 @@
+[
+  {
+    "symbol": "AAPL",
+    "date_range_start": "2003-11-10 00:00:00",
+    "date_range_end": "2025-08-27 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 33.8232401544092,
+    "total_profit": 33823.2401544092,
+    "sharpe_ratio": 0.740256227413871,
+    "max_drawdown_pct": 5.777199847702428,
+    "total_trades": 135,
+    "win_rate": 0.6518518518518519,
+    "profit_factor": 2.590549905555871,
+    "initial_capital": 100000,
+    "final_capital": 133823.2401544092
+  },
+  {
+    "symbol": "MSFT",
+    "date_range_start": "2003-12-22 00:00:00",
+    "date_range_end": "2024-12-04 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 35.69177651082103,
+    "total_profit": 35691.77651082103,
+    "sharpe_ratio": 1.0250516018672968,
+    "max_drawdown_pct": 2.4514042256920945,
+    "total_trades": 148,
+    "win_rate": 0.668918918918919,
+    "profit_factor": 3.8555291996799514,
+    "initial_capital": 100000,
+    "final_capital": 135691.77651082102
+  },
+  {
+    "symbol": "TSLA",
+    "date_range_start": "2013-04-11 00:00:00",
+    "date_range_end": "2026-04-07 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 20.766387992004397,
+    "total_profit": 20766.387992004395,
+    "sharpe_ratio": 0.7239047273047741,
+    "max_drawdown_pct": 9.370764499815042,
+    "total_trades": 55,
+    "win_rate": 0.7272727272727273,
+    "profit_factor": 2.3047990018148297,
+    "initial_capital": 100000,
+    "final_capital": 120766.3879920044
+  }
+]

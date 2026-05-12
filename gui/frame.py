@@ -25,10 +25,34 @@ from gui.handlers import (
     UpdatePlotEvent, EVT_UPDATE_PLOT,
 )
 from src.utils.common_utils import resample_ohlc, map_points_to_ohlc
+from src.analysis.market_structure import SECTOR_MAP
 from typing import Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Grade letter -> HTML color mapping for conviction tier display
+_GRADE_COLORS = {'A': '#1a7a42', 'B': '#2d8659', 'C': '#666', 'D': '#c0392b', 'F': '#e74c3c'}
+
+
+def _currency(symbol: str) -> str:
+    """Return currency prefix for a stock symbol."""
+    clean = str(symbol).strip().replace('.TWO', '').replace('.TW', '')
+    return 'NT$' if (clean.isdigit() or symbol == 'TWII') else '$'
+
+
+def _extract_grades(r: dict) -> tuple:
+    """Extract conviction tier grades and RS rank from a scan result dict.
+
+    Returns (grades_str, rs_rank, trend_grade_color).
+    """
+    tg = r.get('trend_grade', '?')
+    tmg = r.get('timing_grade', '?')
+    rg = r.get('risk_grade', '?')
+    grades = f"[{tg}/{tmg}/{rg}]"
+    rs_rank = r.get('rs_rank', '-')
+    tg_color = _GRADE_COLORS.get(tg, '#666')
+    return grades, rs_rank, tg_color
 
 class CompatListCtrl(wx.ListCtrl):
     """wx.ListCtrl subclass providing wx.ListBox-compatible Clear/Append methods
@@ -193,10 +217,17 @@ class MyFrame(wx.Frame):
         filter_sizer.Add(self.search_ctrl, 1, wx.EXPAND | wx.RIGHT, 4)
 
         self.action_filter = wx.Choice(left_panel,
-                                       choices=["All", "BUY", "WATCH", "EXIT", "HOLD"])
+                                       choices=["All", "BUY", "WATCH", "EXIT", "HOLD",
+                                                "---", "Grade A", "Grade A+B", "Grade C+"])
         self.action_filter.SetSelection(0)
         self.action_filter.Bind(wx.EVT_CHOICE, self._on_action_filter)
         filter_sizer.Add(self.action_filter, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        sector_choices = ["All Sectors"] + sorted(set(SECTOR_MAP.values())) + ["Other"]
+        self.sector_filter = wx.Choice(left_panel, choices=sector_choices, size=(100, -1))
+        self.sector_filter.SetSelection(0)
+        self.sector_filter.Bind(wx.EVT_CHOICE, self._on_sector_filter)
+        filter_sizer.Add(self.sector_filter, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
 
         left_sizer.Add(filter_sizer, 0, wx.EXPAND | wx.ALL, 4)
 
@@ -208,6 +239,7 @@ class MyFrame(wx.Frame):
         self.stocks_list.InsertColumn(1, "Score", width=45)
         self.stocks_list.InsertColumn(2, "Action", width=60)
         self.stocks_list.InsertColumn(3, "Conf%", width=50)
+        self.stocks_list.InsertColumn(4, "RS#", width=40)
         self.stocks_list.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_stock_selected)
         left_sizer.Add(self.stocks_list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 4)
 
@@ -238,9 +270,23 @@ class MyFrame(wx.Frame):
 
         self.notebook = wx.Notebook(right_panel)
 
-        # Tab 0: Dashboard (HTML)
+        # Tab 0: Dashboard (HTML) with market switcher
         self.dashboard_panel = wx.Panel(self.notebook)
         dash_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # Market switcher row
+        dash_filter_panel = wx.Panel(self.dashboard_panel)
+        dash_filter_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        dash_filter_sizer.Add(wx.StaticText(dash_filter_panel, label="Market:"),
+                              0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        self.market_choice = wx.Choice(dash_filter_panel,
+                                       choices=["All Markets", "US Only", "TW Only"])
+        self.market_choice.SetSelection(0)
+        self.market_choice.Bind(wx.EVT_CHOICE, self._on_market_filter)
+        dash_filter_sizer.Add(self.market_choice, 0, wx.ALL, 2)
+        dash_filter_panel.SetSizer(dash_filter_sizer)
+        dash_sizer.Add(dash_filter_panel, 0, wx.EXPAND | wx.ALL, 4)
+
         self.dashboard_html = wx.html.HtmlWindow(
             self.dashboard_panel,
             style=wx.html.HW_SCROLLBAR_AUTO,
@@ -260,6 +306,8 @@ class MyFrame(wx.Frame):
         dash_sizer.Add(self.dashboard_html, 1, wx.EXPAND)
         self.dashboard_panel.SetSizer(dash_sizer)
         self.notebook.AddPage(self.dashboard_panel, "Dashboard")
+
+        self._full_scan_results = None
 
         # Tab 1: Chart
         self.chart_panel = wx.Panel(self.notebook)
@@ -298,6 +346,7 @@ class MyFrame(wx.Frame):
             (wx.ACCEL_CTRL, ord('B'), ID_BACKTEST),
             (wx.ACCEL_CTRL, ord('P'), ID_POSITION),
             (wx.ACCEL_CTRL, ord('L'), ID_LOAD_SCAN),
+            (wx.ACCEL_CTRL | wx.ACCEL_SHIFT, ord('E'), ID_EXPORT),
             (wx.ACCEL_CTRL, ord('Q'), wx.ID_EXIT),
         ])
         self.SetAcceleratorTable(accel_tbl)
@@ -333,6 +382,7 @@ class MyFrame(wx.Frame):
         analysis_menu = wx.Menu()
         analysis_menu.Append(ID_SCAN, "Scan All Stocks\tCtrl+S")
         analysis_menu.Append(ID_WAVE, "Show Elliott Wave\tCtrl+E")
+        analysis_menu.Append(ID_BACKTEST, "Run Backtest\tCtrl+B")
         analysis_menu.Append(ID_POSITION, "Analyze Position\tCtrl+P")
         analysis_menu.Append(ID_LOAD_SCAN, "Load Last Scan\tCtrl+L")
         menu_bar.Append(analysis_menu, "&Analysis")
@@ -472,17 +522,21 @@ class MyFrame(wx.Frame):
             if Path(self.config['international_file']).exists():
                 symbols += list(pd.read_csv(self.config['international_file'])['code'])
         except Exception as e:
-            logger.debug(f"Error loading international.txt: {e}")
+            logger.warning(f"Failed to load US stock list (international.txt): {e}")
         try:
             if Path(self.config['list_file']).exists():
                 symbols += list(pd.read_excel(self.config['list_file'])['code'].astype(str))
+            else:
+                logger.warning(f"TW listed stock file not found: {self.config['list_file']}")
         except Exception as e:
-            logger.debug(f"Error loading list.xlsx: {e}")
+            logger.warning(f"Failed to load TW listed stocks (list.xlsx): {e}")
         try:
             if Path(self.config['otclist_file']).exists():
                 symbols += list(pd.read_excel(self.config['otclist_file'])['code'].astype(str))
+            else:
+                logger.warning(f"TW OTC stock file not found: {self.config['otclist_file']}")
         except Exception as e:
-            logger.debug(f"Error loading otclist.xlsx: {e}")
+            logger.warning(f"Failed to load TW OTC stocks (otclist.xlsx): {e}")
         symbols.append('TWII')
         return sorted(set(symbols))
 
@@ -591,9 +645,9 @@ class MyFrame(wx.Frame):
     # Stock list search / filter
     # ------------------------------------------------------------------
     def _apply_filters(self):
-        """Apply both text search and action filter to the stock list."""
+        """Apply text search, action/grade filter, and sector filter to the stock list."""
         query = self.search_ctrl.GetValue().strip().upper()
-        action_filter = self.action_filter.GetStringSelection()
+        action_choice = self.action_filter.GetStringSelection()
 
         filtered = list(self.all_scan_items)
 
@@ -604,23 +658,40 @@ class MyFrame(wx.Frame):
                 if query in self._item_symbol(item).upper()
             ]
 
-        # Action filter
-        if action_filter and action_filter != "All":
+        # Action / grade filter
+        if action_choice == 'Grade A':
+            filtered = [s for s in filtered if s.get('trend_grade', '?') == 'A']
+        elif action_choice == 'Grade A+B':
+            filtered = [s for s in filtered if s.get('trend_grade', '?') in ('A', 'B')]
+        elif action_choice == 'Grade C+':
+            filtered = [s for s in filtered if s.get('trend_grade', '?') in ('A', 'B', 'C')]
+        elif action_choice == '---':
+            pass  # separator, show all
+        elif action_choice and action_choice != 'All':
             buy_actions = ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')
             hold_actions = ('HOLD', 'WAIT', 'SKIP', 'AVOID')
 
             def matches_filter(item):
                 a = self._item_action(item)
-                if action_filter == "BUY":
+                if action_choice == "BUY":
                     return a in buy_actions
-                elif action_filter == "WATCH":
+                elif action_choice == "WATCH":
                     return a == "WATCH"
-                elif action_filter == "EXIT":
+                elif action_choice == "EXIT":
                     return a == "EXIT"
-                elif action_filter == "HOLD":
+                elif action_choice == "HOLD":
                     return a in hold_actions
                 return True
             filtered = [item for item in filtered if matches_filter(item)]
+
+        # Sector filter
+        if hasattr(self, 'sector_filter'):
+            sector_choice = self.sector_filter.GetStringSelection()
+            if sector_choice and sector_choice != 'All Sectors':
+                filtered = [
+                    s for s in filtered
+                    if SECTOR_MAP.get(self._item_symbol(s), 'Other') == sector_choice
+                ]
 
         self._populate_stocks_list(filtered)
 
@@ -629,6 +700,43 @@ class MyFrame(wx.Frame):
 
     def _on_action_filter(self, event):
         self._apply_filters()
+
+    def _on_sector_filter(self, event):
+        self._apply_filters()
+
+    def _on_market_filter(self, event):
+        """Re-render dashboard for selected market (All/US/TW)."""
+        if self._full_scan_results is None:
+            return
+        choice = self.market_choice.GetStringSelection()
+        if choice == "All Markets":
+            self.update_dashboard(self._full_scan_results)
+        else:
+            market_code = 'US' if 'US' in choice else 'TW'
+            filtered = self._filter_by_market(self._full_scan_results, market_code)
+            self.update_dashboard(filtered)
+
+    @staticmethod
+    def _classify_market(symbol: str) -> str:
+        clean = str(symbol).strip().replace('.TWO', '').replace('.TW', '')
+        return 'TW' if (clean.isdigit() or symbol == 'TWII') else 'US'
+
+    def _filter_by_market(self, scan_results: dict, market: str) -> dict:
+        """Filter scan results to a single market."""
+        results = scan_results.get('results', scan_results.get('stocks', []))
+        filtered = [r for r in results if MyFrame._classify_market(r.get('symbol', '')) == market]
+        buys = [r for r in filtered if r.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')]
+        watches = [r for r in filtered if r.get('action') == 'WATCH']
+        exits = [r for r in filtered if r.get('action') == 'EXIT']
+        return {
+            **scan_results,
+            'results': filtered,
+            'buys': buys,
+            'watches': watches,
+            'exits': exits,
+            'total_scanned': len(filtered),
+            'market_filter': market,
+        }
 
     @staticmethod
     def _item_symbol(item):
@@ -695,6 +803,8 @@ class MyFrame(wx.Frame):
             self.stocks_list.SetItem(idx, 1, score_str)
             self.stocks_list.SetItem(idx, 2, str(short_action))
             self.stocks_list.SetItem(idx, 3, conf_str)
+            rs_rank = stock.get('rs_rank', '') if isinstance(stock, dict) else ''
+            self.stocks_list.SetItem(idx, 4, str(rs_rank) if rs_rank else '')
 
             color = action_colors.get(action)
             if color:
@@ -778,8 +888,26 @@ class MyFrame(wx.Frame):
 
         # Build detail text
         lines = []
+
+        # Conviction grades
+        tg = r.get('trend_grade', '?')
+        tmg = r.get('timing_grade', '?')
+        rg = r.get('risk_grade', '?')
+        grades_str = f"[{tg}/{tmg}/{rg}]"
+        conv_summary = r.get('conviction_summary', '')
+        lines.append(f"Grades: {grades_str}  {conv_summary}")
+
+        # Relative strength
+        rs_rank = r.get('rs_rank')
+        rs_pct = r.get('rs_percentile')
+        if rs_rank:
+            lines.append(f"RS Rank: #{rs_rank}  (top {rs_pct:.0f}%)" if rs_pct else f"RS Rank: #{rs_rank}")
+
+        lines.append("")
+
+        cur = _currency(r.get('symbol', ''))
         if price:
-            lines.append(f"Price: ${price:.2f}   Wave: {r.get('wave', '?')}   Trend: {r.get('trend', '?')}")
+            lines.append(f"Price: {cur}{price:.2f}   Wave: {r.get('wave', '?')}   Trend: {r.get('trend', '?')}")
 
         stop = r.get('stop', 0)
         t1 = r.get('target1', 0)
@@ -788,8 +916,8 @@ class MyFrame(wx.Frame):
 
         if stop and t1:
             risk_pct = abs(price - stop) / price * 100 if price else 0
-            lines.append(f"Entry: ${price:.2f}   Stop: ${stop:.2f} (-{risk_pct:.1f}%)")
-            lines.append(f"Target1: ${t1:.2f}   Target2: ${t2:.2f}")
+            lines.append(f"Entry: {cur}{price:.2f}   Stop: {cur}{stop:.2f} (-{risk_pct:.1f}%)")
+            lines.append(f"Target1: {cur}{t1:.2f}   Target2: {cur}{t2:.2f}")
             lines.append(f"R:R  {rr:.1f} : 1")
 
         # Tier 3: Trailing stop + position sizing
@@ -797,7 +925,7 @@ class MyFrame(wx.Frame):
         size_mult = r.get('size_mult', 0)
         size_note = r.get('size_note', '')
         if trailing and size_mult:
-            lines.append(f"Trail: ${trailing:.2f} (2.5 ATR)   Position: {size_mult:.1f}x ({size_note})")
+            lines.append(f"Trail: {cur}{trailing:.2f} (2.5 ATR)   Position: {size_mult:.1f}x ({size_note})")
 
         rsi = r.get('rsi', 0)
         macd_cross = r.get('macd_cross', '-')
@@ -813,7 +941,7 @@ class MyFrame(wx.Frame):
             adx_str += f" ({adx_reg})"
         lines.append(f"RSI: {rsi:.0f}  MACD: {macd_str}  ADX: {adx_str}  Speed: {speed}")
 
-        # Volume info
+        # Volume & momentum info
         vol_ratio = r.get('vol_ratio', 0)
         vol_score = r.get('volume_score', 0)
         vel_acc = r.get('vel_accel', '')
@@ -821,11 +949,27 @@ class MyFrame(wx.Frame):
         if vol_ratio:
             vol_label = 'confirmed' if vol_ratio >= 1.0 else 'weak'
             vol_parts.append(f"Volume: {vol_ratio:.1f}x avg ({vol_label})")
+        if vol_score:
+            vol_parts.append(f"score {vol_score:.2f}")
         if vel_acc and vel_acc != 'flat':
             vel_label = vel_acc.replace('_', ' ')
             vol_parts.append(f"Momentum: {vel_label}")
         if vol_parts:
             lines.append("  ".join(vol_parts))
+
+        # Composite score & SMA200 context
+        extra = []
+        composite = r.get('composite', 0)
+        if composite:
+            extra.append(f"Composite: {composite:+.2f}")
+        pvs = r.get('price_vs_sma200', 0)
+        if pvs and pvs != 1.0:
+            extra.append(f"vs SMA200: {pvs:.2f}x")
+        mom6 = r.get('mom_6m', 0)
+        if mom6:
+            extra.append(f"6M: {mom6:+.1f}%")
+        if extra:
+            lines.append("  ".join(extra))
 
         reason = r.get('reason', '')
         if reason:
@@ -891,6 +1035,9 @@ class MyFrame(wx.Frame):
             if isinstance(scan_results, list):
                 scan_results = {'results': scan_results, 'total_scanned': len(scan_results)}
 
+            if not scan_results.get('market_filter'):
+                self._full_scan_results = scan_results
+
             results = scan_results.get('results', scan_results.get('stocks', []))
             buys = scan_results.get('buys', [r for r in results if r.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')])
             watches = scan_results.get('watches', [r for r in results if r.get('action') == 'WATCH'])
@@ -905,32 +1052,108 @@ class MyFrame(wx.Frame):
             H = []  # HTML accumulator
             H.append("<html><body>")
 
-            # ── HEADER ──
-            H.append("<h2>Signal Dashboard</h2>")
+            # ── HEADER + MARKET LABEL ──
+            market_filter = scan_results.get('market_filter', '')
+            market_label = f" ({market_filter})" if market_filter else ""
+            H.append(f"<h2>Signal Dashboard{market_label}</h2>")
             if scan_time:
                 H.append(f"<font color='#888' size='2'>{scan_time}</font>")
 
+            # ── CORE INDEX SUMMARY ──
+            us_count = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'US')
+            tw_count = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'TW')
+            above_sma200 = sum(1 for r in results if r.get('price_vs_sma200', 1.0) > 1.0)
+            breadth_pct = above_sma200 / len(results) * 100 if results else 0
+            bullish_count = sum(1 for r in results if r.get('trend') == 'bullish')
+            bullish_pct = bullish_count / len(results) * 100 if results else 0
+
+            H.append("<table bgcolor='#eef2f7' width='100%' cellpadding='6' cellspacing='0'>")
+            H.append("<tr>")
+            H.append(f"<td><b>Stocks:</b> {len(results)} ({us_count} US, {tw_count} TW)</td>")
+            H.append(f"<td><b>Breadth:</b> {breadth_pct:.0f}% above SMA200</td>")
+            H.append(f"<td><b>Bullish:</b> {bullish_pct:.0f}%</td>")
+            H.append("</tr>")
+
+            # Core allocation guidance
+            if breadth_pct >= 65:
+                core_advice = "80% invested — broad strength, stay fully deployed"
+                core_color = '#1a7a42'
+            elif breadth_pct >= 50:
+                core_advice = "70% invested — moderate breadth, normal allocation"
+                core_color = '#2980b9'
+            elif breadth_pct >= 35:
+                core_advice = "60% invested — narrow breadth, reduce exposure"
+                core_color = '#e67e22'
+            else:
+                core_advice = "40-50% invested — weak breadth, raise cash, protect capital"
+                core_color = '#c0392b'
+
+            H.append(f"<tr><td colspan='3'><font color='{core_color}'>"
+                     f"<b>Core Allocation:</b> {core_advice}</font></td></tr>")
+
+            # Data quality diagnostics (with per-market breakdown)
+            no_data = scan_results.get('no_data', 0)
+            no_pattern = scan_results.get('no_pattern', 0)
+            no_sma200 = scan_results.get('no_sma200', 0)
+            if no_data or no_pattern or no_sma200:
+                diag_parts = []
+                if no_data:
+                    diag_parts.append(f"{no_data} no data")
+                if no_pattern:
+                    diag_parts.append(f"{no_pattern} no pattern")
+                if no_sma200:
+                    diag_parts.append(f"{no_sma200} short history (SMA100 fallback)")
+                H.append(f"<tr><td colspan='3'><font color='#888' size='2'>"
+                         f"Data notes: {' | '.join(diag_parts)}"
+                         f"</font></td></tr>")
+            # Per-market signal count
+            us_signals = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'US'
+                             and r.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'))
+            tw_signals = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'TW'
+                             and r.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'))
+            if us_count > 0 and tw_count > 0:
+                H.append(f"<tr><td colspan='3'><font color='#888' size='2'>"
+                         f"Signals: US {us_signals} buy / TW {tw_signals} buy"
+                         f"</font></td></tr>")
+
+            H.append("</table><br>")
+
             # ── MARKET REGIME ──
             if regime:
-                regime_html = {
-                    'FAVORABLE': ("<table bgcolor='#d5f5e3' width='100%'><tr><td>"
-                                  "<b>FAVORABLE</b> -- Markets healthy, normal entries OK"
-                                  "</td></tr></table>"),
-                    'MIXED': ("<table bgcolor='#fef9e7' width='100%'><tr><td>"
-                              "<b>!! MIXED !!</b> -- Selective entries only -- "
-                              "raise conviction bar (score &gt; 75)"
-                              "</td></tr></table>"),
-                    'CAUTION': ("<table bgcolor='#fdedec' width='100%'><tr><td>"
-                                "<font color='#c0392b'><b>XX CAUTION XX</b></font> -- "
-                                "Market overheated -- protect positions, tighten stops, "
-                                "wait for regime to improve"
-                                "</td></tr></table>"),
-                    'UNKNOWN': ("<table bgcolor='#fef9e7' width='100%'><tr><td>"
-                                "<b>?? UNKNOWN ??</b> -- "
-                                "Loaded from cache -- re-scan for live regime"
-                                "</td></tr></table>"),
+                regime_actions = {
+                    'FAVORABLE': {
+                        'bg': '#d5f5e3', 'color': '#1a7a42',
+                        'title': 'FAVORABLE',
+                        'action': 'Stay invested at full allocation. Add positions on pullbacks to SMA50.',
+                        'stops': 'Normal trailing stops (2.5x ATR).',
+                    },
+                    'MIXED': {
+                        'bg': '#fef9e7', 'color': '#856404',
+                        'title': '!! MIXED !!',
+                        'action': 'Only high-conviction entries (score > 75, Grade A trend). Tighten stops to 2x ATR.',
+                        'stops': 'Move stops to breakeven on existing positions after 1R profit.',
+                    },
+                    'CAUTION': {
+                        'bg': '#fdedec', 'color': '#c0392b',
+                        'title': 'XX CAUTION XX',
+                        'action': 'No new positions. Protect existing gains. Consider reducing to core-only.',
+                        'stops': 'Tighten all stops to SMA20. Take partial profits on 2R+ winners.',
+                    },
+                    'UNKNOWN': {
+                        'bg': '#fef9e7', 'color': '#856404',
+                        'title': '?? UNKNOWN ??',
+                        'action': 'Loaded from cache — re-scan (Ctrl+S) for live regime.',
+                        'stops': '',
+                    },
                 }
-                H.append(regime_html.get(regime, f"<p>{regime}</p>"))
+                ri = regime_actions.get(regime, {'bg':'#fff','color':'#000','title':regime,'action':'','stops':''})
+                H.append(f"<table bgcolor='{ri['bg']}' width='100%' cellpadding='6'><tr><td>")
+                H.append(f"<font color='{ri['color']}'><b>{ri['title']}</b></font><br>")
+                H.append(f"<b>Action:</b> {ri['action']}")
+                if ri['stops']:
+                    H.append(f"<br><b>Stops:</b> {ri['stops']}")
+                H.append(f"<br><font size='2' color='#666'>{regime_msg}</font>")
+                H.append("</td></tr></table>")
 
             # ── SIGNAL DISTRIBUTION ──
             n_other = len(holds) + len(avoids)
@@ -960,6 +1183,71 @@ class MyFrame(wx.Frame):
                 H.append(f"<td bgcolor='#ecf0f1'>Trend Strong <b>{trend_strong}/{len(buys)}</b></td>")
                 H.append("</tr></table>")
 
+            # ── TOP PICKS (by Relative Strength) ──
+            if buys:
+                top_picks = sorted(buys, key=lambda x: x.get('rs_rank', 999))[:5]
+                if top_picks:
+                    H.append("<h3 style='color:#1a7a42;margin:15px 0 5px 0;'>Top Picks (by Relative Strength)</h3>")
+                    H.append("<table width='100%' cellpadding='4' cellspacing='0' "
+                             "style='border-collapse:collapse;'>")
+                    H.append(
+                        "<tr style='background:#1a7a42;'>"
+                        "<th><font color='#fff'>Symbol</font></th>"
+                        "<th><font color='#fff'>Action</font></th>"
+                        "<th align='right'><font color='#fff'>Score</font></th>"
+                        "<th><font color='#fff'>Grades</font></th>"
+                        "<th align='right'><font color='#fff'>RS#</font></th>"
+                        "<th align='right'><font color='#fff'>Price</font></th>"
+                        "<th align='right'><font color='#fff'>Stop</font></th>"
+                        "<th align='right'><font color='#fff'>Target</font></th>"
+                        "<th align='right'><font color='#fff'>R:R</font></th>"
+                        "<th align='right'><font color='#fff'>Risk%</font></th>"
+                        "<th align='right'><font color='#fff'>RSI</font></th>"
+                        "<th><font color='#fff'>Wave</font></th>"
+                        "<th align='right'><font color='#fff'>Vol</font></th>"
+                        "<th align='right'><font color='#fff'>6M%</font></th>"
+                        "</tr>"
+                    )
+                    for idx, r in enumerate(top_picks):
+                        sym = r.get('symbol', '')
+                        action = r.get('action', '')
+                        score = r.get('score', 0)
+                        price = r.get('price', 0)
+                        stop = r.get('stop', 0)
+                        t1 = r.get('target1', 0)
+                        rr = r.get('rr', 0)
+                        rsi = r.get('rsi', 0)
+                        wave = r.get('wave', '?')
+                        vr = r.get('vol_ratio', 1.0)
+                        mom6 = r.get('mom_6m', 0)
+                        risk_pct = abs(price - stop) / price * 100 if price else 0
+
+                        grades, rs_rank, tg_color = _extract_grades(r)
+                        cur = _currency(sym)
+                        score_color = '#1a7a42' if score >= 75 else '#b7950b' if score >= 55 else '#c0392b'
+                        rr_color = '#1a7a42' if rr >= 2.0 else '#b7950b' if rr >= 1.0 else '#c0392b'
+                        row_bg = '#e8f5e9' if idx % 2 == 0 else '#d4edda'
+
+                        H.append(
+                            f"<tr style='background:{row_bg};'>"
+                            f"<td><b>{sym}</b></td>"
+                            f"<td>{action}</td>"
+                            f"<td align='right'><font color='{score_color}'><b>{score}</b></font></td>"
+                            f"<td><font color='{tg_color}'>{grades}</font></td>"
+                            f"<td align='right'>{rs_rank}</td>"
+                            f"<td align='right'>{cur}{price:.2f}</td>"
+                            f"<td align='right'>{cur}{stop:.2f}</td>"
+                            f"<td align='right'>{cur}{t1:.2f}</td>"
+                            f"<td align='right'><font color='{rr_color}'>{rr:.1f}x</font></td>"
+                            f"<td align='right'>{risk_pct:.1f}%</td>"
+                            f"<td align='right'>{rsi:.0f}</td>"
+                            f"<td>W{wave}</td>"
+                            f"<td align='right'>{vr:.1f}x</td>"
+                            f"<td align='right'>{mom6:+.1f}%</td>"
+                            f"</tr>"
+                        )
+                    H.append("</table>")
+
             # ── BUY CANDIDATES (ALL) ──
             if buys:
                 H.append(f"<h3>BUY Candidates ({len(buys)})</h3>")
@@ -968,6 +1256,8 @@ class MyFrame(wx.Frame):
                          "<th><font color='#fff'>Symbol</font></th>"
                          "<th><font color='#fff'>Action</font></th>"
                          "<th align='right'><font color='#fff'>Score</font></th>"
+                         "<th><font color='#fff'>Grades</font></th>"
+                         "<th align='right'><font color='#fff'>RS#</font></th>"
                          "<th align='right'><font color='#fff'>Price</font></th>"
                          "<th align='right'><font color='#fff'>Stop</font></th>"
                          "<th align='right'><font color='#fff'>Target 1</font></th>"
@@ -1001,22 +1291,27 @@ class MyFrame(wx.Frame):
                     size = r.get('size_mult', 0)
                     s_note = r.get('size_note', '')
 
+                    grades, rs_rank, tg_color = _extract_grades(r)
+
                     # Color coding
                     score_color = '#1a7a42' if score >= 75 else '#b7950b' if score >= 55 else '#c0392b'
                     vol_color = '#1a7a42' if vr >= 1.0 else '#c0392b' if vr < 0.5 else '#666'
                     rr_color = '#1a7a42' if rr >= 2.0 else '#b7950b' if rr >= 1.0 else '#c0392b'
                     row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
 
+                    cur = _currency(sym)
                     H.append(
                         f"<tr bgcolor='{row_bg}'>"
                         f"<td><b>{sym}</b></td>"
                         f"<td>{action}</td>"
                         f"<td align='right'><font color='{score_color}'><b>{score}</b></font></td>"
-                        f"<td align='right'>${price:.2f}</td>"
-                        f"<td align='right'>${stop:.2f}</td>"
-                        f"<td align='right'>${t1:.2f}</td>"
-                        f"<td align='right'>${t2:.2f}</td>"
-                        f"<td align='right'>${trail:.2f}</td>"
+                        f"<td><font color='{tg_color}'>{grades}</font></td>"
+                        f"<td align='right'>{rs_rank}</td>"
+                        f"<td align='right'>{cur}{price:.2f}</td>"
+                        f"<td align='right'>{cur}{stop:.2f}</td>"
+                        f"<td align='right'>{cur}{t1:.2f}</td>"
+                        f"<td align='right'>{cur}{t2:.2f}</td>"
+                        f"<td align='right'>{cur}{trail:.2f}</td>"
                         f"<td align='right'><font color='{rr_color}'>{rr:.1f}x</font></td>"
                         f"<td align='right'>{risk_pct:.1f}%</td>"
                         f"<td>W{wave}</td>"
@@ -1036,6 +1331,8 @@ class MyFrame(wx.Frame):
                 H.append("<tr bgcolor='#2c3e50'>"
                          "<th><font color='#fff'>Symbol</font></th>"
                          "<th align='right'><font color='#fff'>Score</font></th>"
+                         "<th><font color='#fff'>Grades</font></th>"
+                         "<th align='right'><font color='#fff'>RS#</font></th>"
                          "<th align='right'><font color='#fff'>Price</font></th>"
                          "<th align='right'><font color='#fff'>Stop</font></th>"
                          "<th align='right'><font color='#fff'>Target 1</font></th>"
@@ -1074,13 +1371,18 @@ class MyFrame(wx.Frame):
                     vr = r.get('vol_ratio', 1.0)
                     row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
 
+                    grades, rs_rank, tg_color = _extract_grades(r)
+
+                    cur = _currency(sym)
                     H.append(
                         f"<tr bgcolor='{row_bg}'>"
                         f"<td><b>{sym}</b></td>"
                         f"<td align='right'>{score}</td>"
-                        f"<td align='right'>${price:.2f}</td>"
-                        f"<td align='right'>${stop:.2f}</td>"
-                        f"<td align='right'>${t1:.2f}</td>"
+                        f"<td><font color='{tg_color}'>{grades}</font></td>"
+                        f"<td align='right'>{rs_rank}</td>"
+                        f"<td align='right'>{cur}{price:.2f}</td>"
+                        f"<td align='right'>{cur}{stop:.2f}</td>"
+                        f"<td align='right'>{cur}{t1:.2f}</td>"
                         f"<td align='right'>{rr:.1f}x</td>"
                         f"<td align='right'>{rsi:.0f}</td>"
                         f"<td>W{wave}</td>"
@@ -1096,6 +1398,8 @@ class MyFrame(wx.Frame):
                 H.append("<table border='1' cellpadding='4' cellspacing='0' width='100%'>")
                 H.append("<tr bgcolor='#2c3e50'>"
                          "<th><font color='#fff'>Symbol</font></th>"
+                         "<th><font color='#fff'>Grades</font></th>"
+                         "<th align='right'><font color='#fff'>RS#</font></th>"
                          "<th align='right'><font color='#fff'>Price</font></th>"
                          "<th align='right'><font color='#fff'>RSI</font></th>"
                          "<th align='right'><font color='#fff'>6M %</font></th>"
@@ -1110,14 +1414,20 @@ class MyFrame(wx.Frame):
                     wave = r.get('wave', '?')
                     mom_color = '#1a7a42' if mom6 > 0 else '#c0392b'
                     row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
+
+                    grades, rs_rank, tg_color = _extract_grades(r)
+
+                    cur = _currency(sym)
                     H.append(
                         f"<tr bgcolor='{row_bg}'>"
                         f"<td><b>{sym}</b></td>"
-                        f"<td align='right'>${price:.2f}</td>"
+                        f"<td><font color='{tg_color}'>{grades}</font></td>"
+                        f"<td align='right'>{rs_rank}</td>"
+                        f"<td align='right'>{cur}{price:.2f}</td>"
                         f"<td align='right'>{rsi:.0f}</td>"
                         f"<td align='right'><font color='{mom_color}'>{mom6:+.1f}%</font></td>"
                         f"<td>W{wave}</td>"
-                        f"<td><font color='#e74c3c'>Exit warning</font></td>"
+                        f"<td><font color='#e74c3c'>{r.get('reason', 'Exit warning')}</font></td>"
                         f"</tr>"
                     )
                 H.append("</table>")
@@ -1153,6 +1463,9 @@ class MyFrame(wx.Frame):
                          "<th align='right'><font color='#fff'>6M %</font></th>"
                          "<th><font color='#fff'>Wave</font></th>"
                          "<th><font color='#fff'>Action</font></th>"
+                         "<th align='right'><font color='#fff'>Score</font></th>"
+                         "<th><font color='#fff'>Grades</font></th>"
+                         "<th align='right'><font color='#fff'>RS#</font></th>"
                          "</tr>")
                 for idx, r in enumerate(movers):
                     sym = r.get('symbol', '')
@@ -1160,14 +1473,20 @@ class MyFrame(wx.Frame):
                     mom6 = r.get('mom_6m', 0)
                     wave = r.get('wave', '?')
                     action = r.get('action', '')
+                    score = r.get('score', 0)
+                    grades, rs_rank, tg_color = _extract_grades(r)
                     row_bg = '#f8f9fa' if idx % 2 == 1 else '#ffffff'
+                    cur = _currency(sym)
                     H.append(
                         f"<tr bgcolor='{row_bg}'>"
                         f"<td><b>{sym}</b></td>"
-                        f"<td align='right'>${price:.2f}</td>"
+                        f"<td align='right'>{cur}{price:.2f}</td>"
                         f"<td align='right'><font color='#1a7a42'>{mom6:+.1f}%</font></td>"
                         f"<td>W{wave}</td>"
                         f"<td>{action}</td>"
+                        f"<td align='right'>{score}</td>"
+                        f"<td><font color='{tg_color}'>{grades}</font></td>"
+                        f"<td align='right'>{rs_rank}</td>"
                         f"</tr>"
                     )
                 H.append("</table>")
@@ -1756,7 +2075,7 @@ class MyFrame(wx.Frame):
                                           fontsize=10, fontweight='bold', color=color)
             
             ax.set_title(f"{symbol} - Multi-Timeframe Elliott Wave Analysis", fontsize=14, fontweight='bold')
-            ax.set_ylabel("Price ($)", fontsize=12)
+            ax.set_ylabel(f"Price ({_currency(symbol)})", fontsize=12)
             ax.legend()
             ax.grid(True, alpha=0.3)
             
@@ -1819,7 +2138,7 @@ class MyFrame(wx.Frame):
             
             # Formatting
             ax.set_title(f"{symbol} - Multiple Elliott Wave Patterns", fontsize=14, fontweight='bold')
-            ax.set_ylabel("Price ($)", fontsize=12)
+            ax.set_ylabel(f"Price ({_currency(symbol)})", fontsize=12)
             ax.legend(loc='upper left')
             ax.grid(True, alpha=0.3)
             
@@ -1875,7 +2194,7 @@ class MyFrame(wx.Frame):
         for i, pattern in enumerate(multiple_patterns[:3]):
             ax = axes[i] if num_patterns > 1 else axes[0]
             timeframe_data = self._get_timeframe_specific_data(df, pattern, symbol)
-            self._plot_single_timeframe_pattern(ax, timeframe_data, pattern, i == 0)
+            self._plot_single_timeframe_pattern(ax, timeframe_data, pattern, i == 0, symbol=symbol)
 
         self._fit_figure_to_canvas(fig)
 
@@ -1919,7 +2238,7 @@ class MyFrame(wx.Frame):
             'pattern_rank': pattern.get('composite_score', 0)
         }
 
-    def _plot_single_timeframe_pattern(self, ax, timeframe_data: Dict[str, Any], pattern: Dict[str, Any], is_primary: bool):
+    def _plot_single_timeframe_pattern(self, ax, timeframe_data: Dict[str, Any], pattern: Dict[str, Any], is_primary: bool, symbol: str = ''):
         """Plot a single timeframe pattern with clear labeling"""
         
         df_subset = timeframe_data['df']
@@ -2008,7 +2327,7 @@ class MyFrame(wx.Frame):
                verticalalignment='top')
         
         # Format axes
-        ax.set_ylabel('Price ($)', fontsize=11)
+        ax.set_ylabel(f'Price ({_currency(symbol)})', fontsize=11)
         ax.grid(True, alpha=0.3)
         
         # Smart date formatting based on timeframe length

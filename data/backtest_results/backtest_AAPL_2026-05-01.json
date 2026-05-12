@@ -1,0 +1,17 @@
+[
+  {
+    "symbol": "AAPL",
+    "date_range_start": "2003-11-10 00:00:00",
+    "date_range_end": "2025-08-27 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 33.8232401544092,
+    "total_profit": 33823.2401544092,
+    "sharpe_ratio": 0.740256227413871,
+    "max_drawdown_pct": 5.777199847702428,
+    "total_trades": 135,
+    "win_rate": 0.6518518518518519,
+    "profit_factor": 2.590549905555871,
+    "initial_capital": 100000,
+    "final_capital": 133823.2401544092
+  }
+]

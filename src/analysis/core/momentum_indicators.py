@@ -482,14 +482,15 @@ def compute_momentum_composite(df: pd.DataFrame,
         adx['trending']
     )
 
-    exit_warning = (
-        composite < -0.1 or
-        rsi['divergence'] == 'bearish_div' or
-        rsi['zone'] == 'overbought' or
-        macd['crossover'] == 'bearish_cross' or
-        vel['speed_regime'] in ('crash', 'fast_down') or
-        (vel['acceleration'] == 'accelerating_down' and vel['velocity_5d'] < -3)
-    )
+    _exit_conditions = [
+        composite < -0.1,
+        rsi['divergence'] == 'bearish_div',
+        rsi['zone'] == 'overbought',
+        macd['crossover'] == 'bearish_cross',
+        vel['speed_regime'] in ('crash', 'fast_down'),
+        vel['acceleration'] == 'accelerating_down' and vel['velocity_5d'] < -3,
+    ]
+    exit_warning = sum(_exit_conditions) >= 2 or vel['speed_regime'] == 'crash'
 
     # Confidence adjustment factor
     if composite > 0.3 and adx['trending']:

@@ -1,0 +1,17 @@
+[
+  {
+    "symbol": "1102",
+    "date_range_start": "2003-07-09 00:00:00",
+    "date_range_end": "2025-05-22 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 14.002189417137718,
+    "total_profit": 14002.189417137717,
+    "sharpe_ratio": 0.3602314878443765,
+    "max_drawdown_pct": 6.332209925157603,
+    "total_trades": 169,
+    "win_rate": 0.514792899408284,
+    "profit_factor": 1.4066805996715224,
+    "initial_capital": 100000,
+    "final_capital": 114002.18941713772
+  }
+]

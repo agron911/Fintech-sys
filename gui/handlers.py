@@ -20,7 +20,13 @@ from src.utils.common_utils import (
     get_position_color
 )
 from src.analysis.core.utils import calculate_base_confidence, validate_data_quality
-from src.analysis.core.signal_scoring import analyze_stock, classify_action, apply_market_regime
+from src.analysis.core.signal_scoring import (
+    analyze_stock, classify_action, apply_market_regime,
+    apply_relative_strength, apply_rs_guard,
+    apply_rs_score_adjustment, reclassify_borderline,
+    grade_conviction,
+)
+from src.analysis.market_structure import analyze_market_structure, format_market_structure
 
 logger = logging.getLogger(__name__)
 
@@ -133,18 +139,22 @@ def handle_crawl_data(self, event):
                     message=f"[{i}/{len(symbols)}] [FAIL] {symbol}: {str(e)}\n"))
 
         wx.CallAfter(self.reset_progress)
-        wx.CallAfter(self.update_status, "Crawl complete", 0)
 
         wx.PostEvent(self, UpdateOutputEvent(
             message=f"\nCrawling completed: {success_count} succeeded, {fail_count} failed\n"))
 
-        # Re-enable buttons after completion
-        wx.PostEvent(self, EnableButtonsEvent(enable=True))
+        if success_count > 0:
+            wx.PostEvent(self, UpdateOutputEvent(
+                message="Data updated — auto-scanning with fresh data...\n"))
+            wx.CallAfter(self.update_status, "Auto-scanning after data update...", 0)
+            handle_scan_all_stocks(self, event)
+        else:
+            wx.CallAfter(self.update_status, "Crawl complete", 0)
+            wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
     except Exception as e:
         error_msg = f"Crawling failed: {e}\n{traceback.format_exc()}\n"
         wx.PostEvent(self, UpdateOutputEvent(message=error_msg))
-        # Re-enable buttons after error
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
 
@@ -153,42 +163,58 @@ def handle_run_backtest(self, event):
     """Run backtest for the selected stock and display summary."""
     try:
         symbol = self.combo_stock.GetValue()
-        if symbol == "Select Stock":
+        if not symbol or symbol == "Select Stock":
             wx.PostEvent(self, UpdateOutputEvent(message="Please select a stock first.\n"))
             return
 
         wx.PostEvent(self, UpdateOutputEvent(message=f"Running backtest for {symbol}...\n"))
         wx.CallAfter(self.update_status, f"Running backtest for {symbol}...", 0)
-        self.backtester.run([symbol])
-        results_df = self.backtester.summarize()
-        
+
+        from src.backtest.backtester import Backtester
+        backtester = Backtester(self.config)
+        backtester.run([symbol])
+        results_df = backtester.summarize()
+
         if not results_df.empty:
             for _, row in results_df.iterrows():
-                message = f"{row['symbol']}: Profit={row['profit']:.2f}, min_price_change={row['min_price_change']}\n"
+                stats = row.get('stats', {})
+                trades = stats.get('total_trades', 0) if isinstance(stats, dict) else 0
+                win_rate = stats.get('win_rate', 0) if isinstance(stats, dict) else 0
+                sharpe = stats.get('sharpe_ratio', 0) if isinstance(stats, dict) else 0
+                message = (f"{row['symbol']}: Profit=${row['profit']:,.2f}, "
+                           f"Trades={trades}, Win={win_rate:.0%}, Sharpe={sharpe:.2f}\n")
                 wx.PostEvent(self, UpdateOutputEvent(message=message))
             wx.PostEvent(self, UpdateOutputEvent(message="Backtest completed successfully.\n"))
         else:
-            wx.PostEvent(self, UpdateOutputEvent(message=f"No backtest results found for {symbol}.\n"))
+            data_path = self.config.get('stk2_dir', 'data/raw')
+            from pathlib import Path
+            data_file = Path(data_path) / f"{symbol}.txt"
+            if not data_file.exists():
+                reason = f"Data file not found: {data_file}"
+            else:
+                reason = "No Elliott Wave patterns with sufficient confidence were detected"
+            wx.PostEvent(self, UpdateOutputEvent(
+                message=f"No backtest results for {symbol}.\nReason: {reason}\n"
+                        f"Try fetching latest data first (Menu > Fetch).\n"))
 
         wx.CallAfter(self.update_status, "Backtest complete", 0)
-
-        # Re-enable buttons after completion
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
     except Exception as e:
-        wx.PostEvent(self, UpdateOutputEvent(message=f"Backtest failed: {e}\n"))
-        # Re-enable buttons after error
+        import traceback
+        wx.PostEvent(self, UpdateOutputEvent(
+            message=f"Backtest failed: {e}\n{traceback.format_exc()}\n"))
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
 
 def load_ready_data(symbol, config, output):
     file_path = os.path.join(config['stk2_dir'], f"{symbol}.txt")
     if not os.path.exists(file_path):
-        output.AppendText(f"No data file found for {symbol}.\n")
+        wx.CallAfter(output.AppendText, f"No data file found for {symbol}.\n")
         return None
     df = load_and_preprocess_data(file_path)
     if df is None or len(df) < 50:
-        output.AppendText(f"Insufficient data for Elliott Wave analysis: {len(df) if df is not None else 0} rows\n")
+        wx.CallAfter(output.AppendText, f"Insufficient data for Elliott Wave analysis: {len(df) if df is not None else 0} rows\n")
         return None
     return df
 
@@ -198,7 +224,7 @@ def handle_show_elliott_wave(self, event):
     """Enhanced Elliott Wave analysis handler with advanced multi-pattern detection"""
     symbol = self.combo_stock.GetValue()
     if symbol == "Select Stock":
-        self.output.AppendText("Please select a stock.\n")
+        wx.PostEvent(self, UpdateOutputEvent(message="Please select a stock.\n"))
         return
     
     try:
@@ -259,13 +285,13 @@ def handle_analyze_current_position(self, event):
     try:
         symbol = self.combo_stock.GetValue()
         if not validate_symbol_selection(symbol):
-            self.output.AppendText("Please select a valid stock symbol.\n")
+            wx.PostEvent(self, UpdateOutputEvent(message="Please select a valid stock symbol.\n"))
             return
 
         # Load and prepare data
         df = load_ready_data(symbol, self.config, self.output)
         if df is None or len(df) < 50:
-            self.output.AppendText("Insufficient data for analysis.\n")
+            wx.PostEvent(self, UpdateOutputEvent(message="Insufficient data for analysis.\n"))
             return
 
         # Use advanced multi-pattern detection
@@ -282,9 +308,9 @@ def handle_analyze_current_position(self, event):
         wx.CallAfter(self.notebook.SetSelection, 1)
 
     except Exception as e:
-        self.output.AppendText(f"Error in advanced position analysis: {str(e)}\n")
+        wx.PostEvent(self, UpdateOutputEvent(message=f"Error in advanced position analysis: {str(e)}\n"))
         import traceback
-        self.output.AppendText(f"Traceback: {traceback.format_exc()}\n")
+        wx.PostEvent(self, UpdateOutputEvent(message=f"Traceback: {traceback.format_exc()}\n"))
 
 
 @run_in_thread
@@ -368,6 +394,27 @@ def handle_scan_all_stocks(self, event):
                 message=f"Refreshed {refreshed}/{len(stale_stocks)} stocks\n\n"
             ))
 
+        # --- Phase 1.5: Detect duplicate data files ---
+        import hashlib
+        hash_to_syms = {}
+        for symbol in all_stocks:
+            fp = stk2_dir / f"{symbol}.txt"
+            if fp.exists():
+                try:
+                    h = hashlib.md5(fp.read_bytes()).hexdigest()[:16]
+                    hash_to_syms.setdefault(h, []).append(symbol)
+                except Exception:
+                    pass
+        dup_symbols = set()
+        for h, syms in hash_to_syms.items():
+            if len(syms) > 1:
+                dup_symbols.update(syms)
+        if dup_symbols:
+            wx.PostEvent(self, UpdateOutputEvent(
+                message=f"\n!! DATA WARNING: {len(dup_symbols)} stocks have duplicate data files. "
+                        f"Run 'Crawl Data' to re-fetch.\n"
+            ))
+
         # --- Phase 2: Analyze ---
         results = []
         no_data = 0
@@ -398,6 +445,10 @@ def handle_scan_all_stocks(self, event):
                 action, reason = classify_action(r)
                 r['action'] = action
                 r['reason'] = reason
+                r['market'] = 'TW' if (str(symbol).strip().replace('.TW','').replace('.TWO','').isdigit() or symbol == 'TWII') else 'US'
+                if symbol in dup_symbols:
+                    r['data_warning'] = 'DUPLICATE DATA'
+                r.update(grade_conviction(r))
 
                 results.append(r)
 
@@ -424,8 +475,13 @@ def handle_scan_all_stocks(self, event):
                 ))
                 continue
 
-        # Apply market regime overlay
+        # Post-processing pipeline
+        apply_relative_strength(results)
+        apply_rs_guard(results)
+        apply_rs_score_adjustment(results)
+        reclassify_borderline(results)
         market_regime, regime_msg, exit_pct = apply_market_regime(results)
+        market_structure = analyze_market_structure(results)
 
         # Sort by score
         results.sort(key=lambda x: x.get('score', 0), reverse=True)
@@ -481,6 +537,15 @@ def handle_scan_all_stocks(self, event):
                         'trailing_stop': r.get('trailing_stop', 0),
                         'size_mult': r.get('size_mult', 0),
                         'size_note': r.get('size_note', ''),
+                        # Conviction tiers
+                        'trend_grade': r.get('trend_grade', '?'),
+                        'timing_grade': r.get('timing_grade', '?'),
+                        'risk_grade': r.get('risk_grade', '?'),
+                        'conviction_summary': r.get('conviction_summary', ''),
+                        # Relative strength
+                        'rs_rank': r.get('rs_rank', 0),
+                        'rs_percentile': r.get('rs_percentile', 0),
+                        'market': r.get('market', 'US'),
                     }
                     for r in results
                 ]
@@ -506,6 +571,9 @@ def handle_scan_all_stocks(self, event):
         watches = [r for r in results if r.get('action') == 'WATCH']
         exits = [r for r in results if r.get('action') == 'EXIT']
 
+        no_sma200 = sum(1 for r in results if r.get('sma200') is None)
+        no_pattern = total - no_data - len(results)
+
         scan_results_dict = {
             'results': results,
             'buys': buys,
@@ -516,6 +584,8 @@ def handle_scan_all_stocks(self, event):
             'exit_pct': exit_pct,
             'total_scanned': total,
             'no_data': no_data,
+            'no_pattern': no_pattern,
+            'no_sma200': no_sma200,
             'scan_time': scan_time.strftime('%Y-%m-%d %H:%M'),
             'chart_type': self.chart_type,
             'timeframe': candlestick_type,
@@ -523,25 +593,22 @@ def handle_scan_all_stocks(self, event):
         wx.CallAfter(self.update_dashboard, scan_results_dict)
         wx.CallAfter(self.notebook.SetSelection, 0)  # Dashboard
 
-        # Log summary
-        wx.PostEvent(self, UpdateOutputEvent(message=f"\n{'='*70}\n"))
+        # Market structure dashboard
+        ms_text = format_market_structure(market_structure)
+        wx.PostEvent(self, UpdateOutputEvent(message=f"\n{ms_text}\n"))
+
         wx.PostEvent(self, UpdateOutputEvent(
             message=f"SCAN COMPLETE — {scan_time.strftime('%Y-%m-%d %H:%M')}\n"
         ))
-        wx.PostEvent(self, UpdateOutputEvent(
-            message=f"Regime: {market_regime} | {regime_msg}\n"
-        ))
-        wx.PostEvent(self, UpdateOutputEvent(
-            message=f"Analyzed: {len(results)} | BUY: {len(buys)} | WATCH: {len(watches)} | EXIT: {len(exits)}\n"
-        ))
-        wx.PostEvent(self, UpdateOutputEvent(message=f"{'='*70}\n"))
 
         if buys:
             wx.PostEvent(self, UpdateOutputEvent(message="\nBUY CANDIDATES:\n"))
             for r in buys[:10]:
+                grades = f"[{r.get('trend_grade','?')}/{r.get('timing_grade','?')}/{r.get('risk_grade','?')}]"
+                rs = f" RS#{r.get('rs_rank','')}" if r.get('rs_rank') else ""
                 wx.PostEvent(self, UpdateOutputEvent(
                     message=f"  {r['action']:<14s} {r['symbol']:<8s} ${r['price']:<8.2f} "
-                            f"Score:{r.get('score',0):>3d}  R:R {r['rr']:.1f}  {r['reason']}\n"
+                            f"{grades}  R:R {r['rr']:.1f}{rs}  {r['reason']}\n"
                 ))
 
         wx.PostEvent(self, EnableButtonsEvent(enable=True))
@@ -597,6 +664,8 @@ def _update_stocks_listbox(self, results):
             self.stocks_list.SetItem(idx, 1, score_str)
             self.stocks_list.SetItem(idx, 2, short_action)
             self.stocks_list.SetItem(idx, 3, conf_str)
+            rs_rank = stock.get('rs_rank', '')
+            self.stocks_list.SetItem(idx, 4, str(rs_rank) if rs_rank else '')
 
             # Color-code the row
             color = action_colors.get(action)
@@ -619,7 +688,7 @@ def _update_stocks_listbox(self, results):
 
 
 def handle_load_scan(self, event):
-    """Load previously cached scan results."""
+    """Load cached scan results, or auto-rescan if data is newer than cache."""
     try:
         if not hasattr(self, 'scan_cache'):
             self.output.AppendText("Error: Scan cache not initialized\n")
@@ -627,7 +696,27 @@ def handle_load_scan(self, event):
 
         cache_data = self.scan_cache.load_scan_results()
         if not cache_data:
-            self.output.AppendText("No cached scan results found.\nRun 'Scan All Stocks' first.\n")
+            self.output.AppendText("No cached scan results found. Running fresh scan...\n")
+            handle_scan_all_stocks(self, event)
+            return
+
+        # Check if data files are newer than the cache
+        from datetime import datetime
+        cache_ts = datetime.fromisoformat(cache_data['timestamp'])
+        data_dir = Path(self.config.get('stk2_dir', 'data/raw'))
+        newest_data = max(
+            (f.stat().st_mtime for f in data_dir.glob('*.txt')),
+            default=0
+        )
+        data_ts = datetime.fromtimestamp(newest_data) if newest_data else cache_ts
+
+        if data_ts > cache_ts:
+            age = self.scan_cache._format_age((datetime.now() - cache_ts).total_seconds())
+            self.output.AppendText(
+                f"Cache is outdated ({age}) — data was updated since last scan.\n"
+                f"Running fresh scan with local data (no re-fetch)...\n"
+            )
+            handle_scan_all_stocks(self, event)
             return
 
         stocks = cache_data['stocks']
@@ -638,26 +727,40 @@ def handle_load_scan(self, event):
 
         self.scanned_timeframe = timeframe
 
-        # Restore _scan_results lookup for trade plan
         self._scan_results = {s['symbol']: s for s in stocks if 'symbol' in s}
 
         wx.CallAfter(_update_stocks_listbox, self, stocks)
 
-        # Build dashboard-compatible dict
         buys = [s for s in stocks if s.get('action', '') in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')]
         watches = [s for s in stocks if s.get('action') == 'WATCH']
         exits = [s for s in stocks if s.get('action') == 'EXIT']
+
+        # Recalculate market regime from cached results
+        n = len(stocks)
+        exit_avoid = sum(1 for s in stocks if s.get('action') in ('EXIT', 'AVOID'))
+        exit_pct = exit_avoid / n * 100 if n else 0
+        if exit_pct >= 30:
+            market_regime, regime_msg = 'CAUTION', f'CAUTION: {exit_pct:.0f}% EXIT/AVOID (from cache {timestamp})'
+        elif exit_pct >= 15:
+            market_regime, regime_msg = 'MIXED', f'MIXED: {exit_pct:.0f}% EXIT/AVOID (from cache {timestamp})'
+        else:
+            market_regime, regime_msg = 'FAVORABLE', f'FAVORABLE: {exit_pct:.0f}% EXIT/AVOID (from cache {timestamp})'
+
+        # Recalculate data quality from cached results
+        no_sma200 = sum(1 for s in stocks if s.get('sma200') is None)
 
         scan_results_dict = {
             'results': stocks,
             'buys': buys,
             'watches': watches,
             'exits': exits,
-            'market_regime': 'UNKNOWN',
-            'regime_msg': f'Loaded from cache ({timestamp})',
-            'exit_pct': 0,
+            'market_regime': market_regime,
+            'regime_msg': regime_msg,
+            'exit_pct': exit_pct,
             'total_scanned': total_scanned,
-            'no_data': 0,
+            'no_data': max(0, total_scanned - n),
+            'no_pattern': 0,
+            'no_sma200': no_sma200,
             'scan_time': timestamp,
             'chart_type': chart_type,
             'timeframe': timeframe,
@@ -869,38 +972,38 @@ def display_advanced_multi_pattern_results(output_widget, symbol: str, patterns_
             output_widget.AppendText(f"   Base: {base_pattern.get('timeframe', 'unknown')} ({pattern.get('confidence', 0):.1%})\n")
 
 
-def display_advanced_position_analysis_results(output_widget, symbol: str, 
-                                             position_data: Dict[str, Any], 
+def display_advanced_position_analysis_results(output_widget, symbol: str,
+                                             position_data: Dict[str, Any],
                                              patterns_data: Dict[str, Any]):
     """Display advanced position analysis results with multi-pattern context"""
-    
-    output_widget.AppendText(f"\n{'='*60}\n")
-    output_widget.AppendText(f"ADVANCED POSITION ANALYSIS FOR {symbol}\n")
-    output_widget.AppendText(f"{'='*60}\n")
-    
+
+    wx.CallAfter(output_widget.AppendText, f"\n{'='*60}\n")
+    wx.CallAfter(output_widget.AppendText, f"ADVANCED POSITION ANALYSIS FOR {symbol}\n")
+    wx.CallAfter(output_widget.AppendText, f"{'='*60}\n")
+
     # Basic position info
     position = position_data.get('position', 'unknown')
     confidence = position_data.get('confidence', 0.0)
-    
-    output_widget.AppendText(f"Current Position: {position.replace('_', ' ').title()}\n")
-    output_widget.AppendText(f"Position Confidence: {confidence:.1%}\n")
-    
+
+    wx.CallAfter(output_widget.AppendText, f"Current Position: {position.replace('_', ' ').title()}\n")
+    wx.CallAfter(output_widget.AppendText, f"Position Confidence: {confidence:.1%}\n")
+
     # Multi-pattern context
     pattern_hierarchy = patterns_data.get('pattern_hierarchy', {})
     pattern_relationships = patterns_data.get('pattern_relationships', {})
-    
+
     if pattern_hierarchy.get('primary'):
         primary = pattern_hierarchy['primary']
-        output_widget.AppendText(f"Primary Pattern: {primary['timeframe']} ({primary['pattern']['confidence']:.1%})\n")
-    
+        wx.CallAfter(output_widget.AppendText, f"Primary Pattern: {primary['timeframe']} ({primary['pattern']['confidence']:.1%})\n")
+
     alignment_score = pattern_relationships.get('alignment_score', 0.0)
-    output_widget.AppendText(f"Pattern Alignment: {alignment_score:.1%}\n")
-    
+    wx.CallAfter(output_widget.AppendText, f"Pattern Alignment: {alignment_score:.1%}\n")
+
     # Trading implications with multi-pattern context
     implications = get_advanced_trading_implications(position, confidence, patterns_data)
-    output_widget.AppendText(f"\n📊 TRADING IMPLICATIONS\n")
-    output_widget.AppendText(f"{'-'*25}\n")
-    output_widget.AppendText(implications)
+    wx.CallAfter(output_widget.AppendText, f"\n📊 TRADING IMPLICATIONS\n")
+    wx.CallAfter(output_widget.AppendText, f"{'-'*25}\n")
+    wx.CallAfter(output_widget.AppendText, implications)
 
 
 def get_advanced_trading_implications(position: str, confidence: float, 
@@ -1048,9 +1151,9 @@ def update_advanced_position_plot(self, df: pd.DataFrame,
         self.canvas.draw_idle()
 
     except Exception as e:
-        self.output.AppendText(f"Error in advanced position plot: {e}\n")
+        wx.CallAfter(self.output.AppendText, f"Error in advanced position plot: {e}\n")
         import traceback
-        self.output.AppendText(f"Traceback: {traceback.format_exc()}\n")
+        wx.CallAfter(self.output.AppendText, f"Traceback: {traceback.format_exc()}\n")
 
 
 def plot_position_timeline(ax, patterns_data: Dict[str, Any], position_data: Dict[str, Any]):

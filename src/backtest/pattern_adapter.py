@@ -85,6 +85,7 @@ def adapt_wave_data_to_strategy_input(df: pd.DataFrame,
 
     # Apply momentum-based confidence adjustment
     adjusted_confidence *= momentum_composite.get('confidence_adjustment', 1.0)
+    adjusted_confidence = max(adjusted_confidence, 0.15)
     adjusted_confidence = min(adjusted_confidence, 1.0)
 
     # Detect market regime (trending / ranging / volatile)
@@ -162,12 +163,22 @@ def _compute_trend_context(df: pd.DataFrame, column: str = 'close') -> Dict[str,
             result['trend'] = 'bullish'
         elif sma50 < sma200 and current_price < sma200:
             result['trend'] = 'bearish'
-    else:
-        # With only SMA50, compare price position
+    elif len(prices) >= 100:
+        # Use SMA100 as intermediate proxy when SMA200 is unavailable
+        sma100 = prices.rolling(100).mean().iloc[-1]
+        result['sma200'] = float(sma100)
         current_price = float(prices.iloc[-1])
-        if current_price > sma50 * 1.05:
+        result['price_vs_sma200'] = current_price / sma100 if sma100 > 0 else 1.0
+
+        if sma50 > sma100 and current_price > sma100:
             result['trend'] = 'bullish'
-        elif current_price < sma50 * 0.95:
+        elif sma50 < sma100 and current_price < sma100:
+            result['trend'] = 'bearish'
+    else:
+        current_price = float(prices.iloc[-1])
+        if current_price > sma50 * 1.03:
+            result['trend'] = 'bullish'
+        elif current_price < sma50 * 0.97:
             result['trend'] = 'bearish'
 
     return result

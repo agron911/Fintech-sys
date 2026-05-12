@@ -25,7 +25,7 @@ import json
 import warnings
 warnings.filterwarnings('ignore')
 import logging
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.WARNING)
 
 import numpy as np
 import pandas as pd
@@ -37,8 +37,15 @@ from src.analysis.core.signal_scoring import (
     analyze_stock as analyze,
     classify_action,
     apply_market_regime,
+    apply_relative_strength,
+    apply_rs_guard,
+    apply_rs_score_adjustment,
+    reclassify_borderline,
+    grade_conviction,
+    _classify_market,
     SCORING_CONFIG,
 )
+from src.analysis.market_structure import analyze_market_structure, format_market_structure
 from src.crawler.yahoo_finance import fetch_stock_data, save_stock_data
 
 # Extended universe of liquid US stocks across sectors (~180 stocks)
@@ -141,6 +148,13 @@ def main():
                         help='Show top N candidates in each category')
     parser.add_argument('--output', type=str, metavar='FILE',
                         help='Save analysis results to a JSON file')
+    parser.add_argument('--sector', nargs='+', metavar='SECTOR',
+                        help='Filter by sector (e.g., --sector Tech Semis Energy)')
+    parser.add_argument('--sort', choices=['score', 'rs', 'rr', 'momentum'],
+                        default='score', help='Sort results by (default: score)')
+    parser.add_argument('--format', choices=['text', 'csv', 'json'],
+                        default='text', dest='output_format',
+                        help='Output format (default: text)')
     args = parser.parse_args()
 
     config = load_config()
@@ -283,11 +297,50 @@ def main():
             action, reason = classify_action(r)
             r['action'] = action
             r['reason'] = reason
+            r['market'] = _classify_market(symbol)
+            r.update(grade_conviction(r))
             results.append(r)
     sys.stdout.write("\n")
 
-    # --- Market regime overlay ---
+    # --- Post-processing pipeline ---
+    apply_relative_strength(results)
+    apply_rs_guard(results)
+    apply_rs_score_adjustment(results)
+    reclassify_borderline(results)
     market_regime, regime_msg, exit_pct = apply_market_regime(results)
+
+    # --- Sector filter ---
+    if args.sector:
+        from src.analysis.market_structure import SECTOR_MAP as _SM
+        allowed = set(s.upper() for s in args.sector)
+        valid_sectors = set()
+        for s in allowed:
+            for name in set(_SM.values()):
+                if s in name.upper() or name.upper() in s:
+                    valid_sectors.add(name)
+        results = [r for r in results if _SM.get(r['symbol'], '') in valid_sectors]
+
+    # --- CSV / JSON output ---
+    if args.output_format == 'csv':
+        import csv
+        writer = csv.writer(sys.stdout)
+        writer.writerow(['Symbol','Action','Score','Price','Wave','Trend',
+                         'R:R','RSI','ADX','Mom6M','RS_Rank','Grades','Reason'])
+        for r in results:
+            grades = f"[{r.get('trend_grade','?')}/{r.get('timing_grade','?')}/{r.get('risk_grade','?')}]"
+            writer.writerow([
+                r['symbol'], r.get('action',''), r.get('score',0),
+                f"{r['price']:.2f}", r.get('wave',0), r.get('trend',''),
+                f"{r.get('rr',0):.1f}", f"{r.get('rsi',0):.0f}",
+                f"{r.get('adx',0):.0f}", f"{r.get('mom_6m',0):.1f}",
+                r.get('rs_rank',''), grades, r.get('reason',''),
+            ])
+        return
+
+    # --- Market structure dashboard ---
+    ms = analyze_market_structure(results)
+    print()
+    print(format_market_structure(ms))
 
     # Separate into categories
     buys = [r for r in results if r['action'] in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION')]
@@ -296,9 +349,15 @@ def main():
     exits = [r for r in results if r['action'] == 'EXIT']
     avoids = [r for r in results if r['action'] in ('AVOID', 'SKIP')]
 
-    # Sort by composite score
-    buys.sort(key=lambda x: x.get('score', 0), reverse=True)
-    watches.sort(key=lambda x: x.get('score', 0), reverse=True)
+    # Sort
+    sort_key = {
+        'score': lambda x: x.get('score', 0),
+        'rs': lambda x: -(x.get('rs_rank') or 9999),
+        'rr': lambda x: x.get('rr', 0),
+        'momentum': lambda x: x.get('mom_6m', 0),
+    }[args.sort]
+    buys.sort(key=sort_key, reverse=True)
+    watches.sort(key=sort_key, reverse=True)
 
     # Output
     print()
@@ -317,31 +376,25 @@ def main():
         print()
         for r in buys:
             risk_pct = abs(r['price'] - r['stop']) / r['price'] * 100
+            rs_info = f"  RS#{r['rs_rank']}" if 'rs_rank' in r else ""
 
-            print("  \033[32m{}\033[0m  {}".format(r['action'], r['symbol']))
-            print("    {}".format(r['reason']))
-            print("    Price: ${:.2f}  |  Wave: {}  |  Confidence: {:.0f}%".format(
-                r['price'], r['wave'], r['conf'] * 100))
+            print("  \033[32m{}\033[0m  {}{}".format(r['action'], r['symbol'], rs_info))
+            print("    {}".format(r.get('conviction_summary', r['reason'])))
+            print("    Trend: {}  Timing: {}  Risk: {}".format(
+                r.get('trend_grade', '?'), r.get('timing_grade', '?'), r.get('risk_grade', '?')))
+            cur = 'NT$' if r.get('market') == 'TW' else '$'
+            print("    Price: {}{:.2f}  |  Wave: {}  |  Conf: {:.0f}%  |  6M: {:+.1f}%".format(
+                cur, r['price'], r['wave'], r['conf'] * 100, r.get('mom_6m', 0)))
             print()
             print("    \033[1mTRADE PLAN:\033[0m")
-            print("      Entry:   ${:.2f}  (current price)".format(r['price']))
-            print("      Stop:    ${:.2f}  ({:.1f}% risk)".format(r['stop'], risk_pct))
-            print("      Target1: ${:.2f}  (1.618 Fib extension)".format(r['target1']))
-            print("      Target2: ${:.2f}  (2.618 Fib extension)".format(r['target2']))
+            print("      Entry:   {}{:.2f}  (current price)".format(cur, r['price']))
+            print("      Stop:    {}{:.2f}  ({:.1f}% risk)".format(cur, r['stop'], risk_pct))
+            print("      Target1: {}{:.2f}  (1.618 Fib extension)".format(cur, r['target1']))
+            print("      Target2: {}{:.2f}  (2.618 Fib extension)".format(cur, r['target2']))
             print("      R:R      {:.1f} : 1".format(r['rr']))
             print()
-            print("    Position sizing (1% account risk):")
-            print("      $10K account  ->  {} shares, ${:.0f} position".format(
-                max(1, int(100 / (r['price'] - r['stop']))) if r['price'] != r['stop'] else 1,
-                min(10000 * 0.4, 100 / max(0.01, r['price'] - r['stop']) * r['price'])
-            ))
-            print("      $100K account ->  {} shares, ${:.0f} position".format(
-                max(1, int(1000 / max(0.01, r['price'] - r['stop']))),
-                min(100000 * 0.4, 1000 / max(0.01, r['price'] - r['stop']) * r['price'])
-            ))
-            print()
-            print("    Signals:  RSI={:.0f}  MACD={}  ADX={:.0f}  Speed={}  6M={:+.1f}%".format(
-                r['rsi'], r['macd_cross'] or '-', r['adx'], r['speed'], r['mom_6m']))
+            print("    Signals:  RSI={:.0f}  MACD={}  ADX={:.0f}  Speed={}".format(
+                r['rsi'], r['macd_cross'] or '-', r['adx'], r['speed']))
             if r.get('rsi_div'):
                 print("    *** {} ***".format(r['rsi_div'].upper()))
             print()
@@ -360,14 +413,11 @@ def main():
         top_n = args.top if hasattr(args, 'top') else 10
         print("  \033[33mWATCH LIST ({}) — Close to a buy, monitor daily:\033[0m".format(len(watches)))
         for r in watches[:top_n]:
-            print("    {:<8s}  ${:<8.2f}  Wave {}  Conf {:.0f}%  |  {}".format(
-                r['symbol'], r['price'], r['wave'], r['conf'] * 100, r['reason']))
-            if args.verbose if hasattr(args, 'verbose') else False:
-                print("      RSI={:.0f}({})  MACD={}  ADX={:.0f}  Speed={}  6M={:+.1f}%  R:R={:.1f}".format(
-                    r['rsi'], r['rsi_zone'], r['macd_cross'] or '-', r['adx'],
-                    r['speed'], r['mom_6m'], r['rr']))
-                if r.get('rsi_div'):
-                    print("      *** {} ***".format(r['rsi_div'].upper()))
+            grades = f"[{r.get('trend_grade','?')}/{r.get('timing_grade','?')}/{r.get('risk_grade','?')}]"
+            rs = f" RS#{r['rs_rank']}" if 'rs_rank' in r else ""
+            cur = 'NT$' if r.get('market') == 'TW' else '$'
+            print("    {:<8s}  {}{:<8.2f}  {:<7s} Wave {}  6M={:+.1f}%{}  |  {}".format(
+                r['symbol'], cur, r['price'], grades, r['wave'], r.get('mom_6m', 0), rs, r['reason']))
         if len(watches) > top_n:
             print("    ... and {} more".format(len(watches) - top_n))
         print()
@@ -375,8 +425,9 @@ def main():
     if exits:
         print("  \033[31mEXIT / TAKE PROFIT ({}):\033[0m".format(len(exits)))
         for r in exits:
-            print("    {:<8s}  ${:<8.2f}  Wave {}  |  {}".format(
-                r['symbol'], r['price'], r['wave'], r['reason']))
+            cur = 'NT$' if r.get('market') == 'TW' else '$'
+            print("    {:<8s}  {}{:<8.2f}  Wave {}  |  {}".format(
+                r['symbol'], cur, r['price'], r['wave'], r['reason']))
             if args.verbose if hasattr(args, 'verbose') else False:
                 print("      RSI={:.0f}({})  MACD={}  ADX={:.0f}  Speed={}  6M={:+.1f}%".format(
                     r['rsi'], r['rsi_zone'], r['macd_cross'] or '-', r['adx'],
@@ -386,8 +437,9 @@ def main():
     if holds:
         print("  WAITING ({}) — Impulse complete, watching for new wave:".format(len(holds)))
         for r in holds[:5]:
-            print("    {:<8s}  ${:<8.2f}  Wave {}  trend={}/{}".format(
-                r['symbol'], r['price'], r['wave'], r['pdir'], r['trend']))
+            cur = 'NT$' if r.get('market') == 'TW' else '$'
+            print("    {:<8s}  {}{:<8.2f}  Wave {}  trend={}/{}".format(
+                r['symbol'], cur, r['price'], r['wave'], r['pdir'], r['trend']))
         if len(holds) > 5:
             print("    ... and {} more".format(len(holds) - 5))
         print()
@@ -395,7 +447,8 @@ def main():
     if avoids:
         print("  AVOID ({}) — Bearish or low quality:".format(len(avoids)))
         for r in avoids[:5]:
-            print("    {:<8s}  ${:<8.2f}  |  {}".format(r['symbol'], r['price'], r['reason']))
+            cur = 'NT$' if r.get('market') == 'TW' else '$'
+            print("    {:<8s}  {}{:<8.2f}  |  {}".format(r['symbol'], cur, r['price'], r['reason']))
         if len(avoids) > 5:
             print("    ... and {} more".format(len(avoids) - 5))
         print()

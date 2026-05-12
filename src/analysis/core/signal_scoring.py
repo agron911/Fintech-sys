@@ -65,6 +65,9 @@ SCORING_CONFIG = {
     'vol_surge_threshold': 1.5,
     'vol_low_pts': -3,
     'vol_low_threshold': 0.5,
+    'correction_bonus_pts': 20,
+    'rs_top_quartile_boost': 10,
+    'rs_bottom_quartile_penalty': -5,
 }
 
 
@@ -80,7 +83,7 @@ def analyze_stock(symbol: str, df: pd.DataFrame) -> dict | None:
     if len(peaks) < 3 or len(troughs) < 3:
         return None
 
-    best = find_best_impulse_wave(df, peaks, troughs, column='close')
+    best = find_best_impulse_wave(df, peaks, troughs, column='close', recency_weight=0.3)
     if best.get('wave_type') in ('no_candidates', 'no_pattern'):
         return None
 
@@ -279,21 +282,24 @@ def classify_action(r: dict) -> tuple[str, str]:
         r['score'] = 0
         return 'AVOID', 'Bearish trend'
     if exit_warn and wave >= 5:
-        r['score'] = 0
-        return 'EXIT', f'Wave {wave} + exit warning'
+        sma50 = r.get('sma50')
+        price = r.get('price', 0)
+        if sma50 and price < sma50:
+            r['score'] = 0
+            return 'EXIT', f'Wave {wave} + exit warning + below SMA50'
     if conf < cfg['min_confidence']:
         r['score'] = 0
         return 'SKIP', f'Low confidence ({conf * 100:.0f}%)'
 
     fib_retrace = r.get('fib_retrace')
-    if (fib_retrace and wave in [5, 6] and trend == 'bullish'
-            and r['rsi'] < cfg['wave_c_rsi_max']
-            and r.get('macd_cross') == 'bullish'
-            and conf >= cfg['min_confidence']):
-        r['score'] = 70
-        return 'BUY CORRECTION', f'Wave C complete at {fib_retrace} Fib retracement'
+    correction_candidate = (
+        fib_retrace and wave in [5, 6] and trend == 'bullish'
+        and r['rsi'] < cfg['wave_c_rsi_max']
+        and r.get('macd_cross') == 'bullish'
+        and conf >= cfg['min_confidence']
+    )
 
-    if pdir == 'down' and trend == 'bullish':
+    if pdir == 'down' and trend == 'bullish' and not correction_candidate:
         r['score'] = 0
         return 'AVOID', 'Counter-trend pattern'
 
@@ -354,9 +360,15 @@ def classify_action(r: dict) -> tuple[str, str]:
         score += pts
         factors.append(f'RSI bullish div (+{pts})')
 
+    if correction_candidate:
+        pts = cfg['correction_bonus_pts']
+        score += pts
+        factors.append(f'Correction setup (+{pts})')
+
     # --- Tier 1: Momentum quality factors ---
     composite_val = r.get('composite', 0)
-    mom_quality_pts = int(max(0, composite_val) * cfg['momentum_quality_max_pts'])
+    mom_quality_pts = min(cfg['momentum_quality_max_pts'],
+                         int(max(0, composite_val) * cfg['momentum_quality_max_pts']))
     if mom_quality_pts > 0:
         score += mom_quality_pts
         factors.append(f'Momentum quality (+{mom_quality_pts})')
@@ -437,6 +449,7 @@ def classify_action(r: dict) -> tuple[str, str]:
         score += cfg['vol_low_pts']
         factors.append(f'Low volume ({cfg["vol_low_pts"]})')
 
+    score = max(0, score)
     r['score'] = score
     top_factors = ', '.join(factors[:3])
 
@@ -446,6 +459,8 @@ def classify_action(r: dict) -> tuple[str, str]:
         return 'BUY', f'Score {score}/100: {top_factors}'
     if score >= cfg['buy_dip_score'] and wave == 4 and trend == 'bullish':
         return 'BUY DIP', f'Score {score}/100: Wave 4 pullback'
+    if correction_candidate and score >= cfg['buy_dip_score']:
+        return 'BUY CORRECTION', f'Score {score}/100: Wave C at {fib_retrace} Fib retracement, {top_factors}'
     if score >= cfg['watch_score']:
         missing = []
         if not entry_ok:
@@ -463,6 +478,193 @@ def classify_action(r: dict) -> tuple[str, str]:
         return 'HOLD', f'Wave {wave} — wait for new impulse'
 
     return 'WAIT', f'Score {score}/100 — no clear setup'
+
+
+def grade_conviction(r: dict) -> dict:
+    """
+    Grade a stock on three independent dimensions instead of a single score.
+
+    Returns dict with:
+        trend_grade: A/B/C/D/F — is this stock in a healthy trend?
+        timing_grade: A/B/C/D/F — is now a good time to enter?
+        risk_grade: A/B/C/D/F — is the risk/reward favorable?
+        summary: one-line human-readable summary
+    """
+    # --- Trend Quality ---
+    trend = r.get('trend', 'neutral')
+    pdir = r.get('pdir', 'unknown')
+    adx = r.get('adx', 0)
+    price_vs_sma200 = r.get('price_vs_sma200', 1.0)
+
+    trend_score = 0
+    if trend == 'bullish':
+        trend_score += 3
+    elif trend == 'bearish':
+        trend_score -= 3
+    if pdir == 'up':
+        trend_score += 2
+    elif pdir == 'down':
+        trend_score -= 1
+    if adx >= 25:
+        trend_score += 2
+    elif adx < 15:
+        trend_score -= 1
+    if price_vs_sma200 > 1.0:
+        trend_score += 1
+    elif price_vs_sma200 < 0.95:
+        trend_score -= 1
+
+    trend_grade = _score_to_grade(trend_score, max_score=8)
+
+    # --- Setup Timing ---
+    wave = r.get('wave', 0)
+    rsi = r.get('rsi', 50)
+    entry_ok = r.get('entry_ok', False)
+    exit_warn = r.get('exit_warn', False)
+    macd_cross = r.get('macd_cross', '')
+    vel_accel = r.get('vel_accel', 'flat')
+
+    timing_score = 0
+    if wave == 3:
+        timing_score += 3
+    elif wave == 2:
+        timing_score += 2
+    elif wave == 1:
+        timing_score += 1
+    elif wave in [5, 6]:
+        timing_score -= 1
+
+    if entry_ok:
+        timing_score += 2
+    if exit_warn:
+        timing_score -= 2
+
+    if 30 < rsi < 60:
+        timing_score += 1
+    elif rsi < 30:
+        timing_score += 2
+    elif rsi > 70:
+        timing_score -= 2
+
+    if macd_cross == 'bullish':
+        timing_score += 1
+    if vel_accel == 'accelerating_up':
+        timing_score += 1
+    elif vel_accel == 'decelerating':
+        timing_score -= 1
+
+    if wave in [5, 6] and r.get('trend') == 'bullish':
+        if 40 <= rsi <= 60:
+            timing_score += 2
+        if r.get('macd_hist_dir') == 'expanding_up':
+            timing_score += 1
+        if r.get('vel_accel') == 'accelerating_up':
+            timing_score += 1
+
+    timing_grade = _score_to_grade(timing_score, max_score=10)
+
+    # --- Risk / Reward ---
+    rr = r.get('rr', 0)
+    conf = r.get('conf', 0)
+    atr_regime = r.get('atr_regime', 'normal')
+
+    risk_score = 0
+    if rr >= 3.0:
+        risk_score += 4
+    elif rr >= 2.0:
+        risk_score += 3
+    elif rr >= 1.5:
+        risk_score += 2
+    elif rr >= 1.0:
+        risk_score += 1
+
+    if conf >= 0.5:
+        risk_score += 2
+    elif conf >= 0.3:
+        risk_score += 1
+
+    if atr_regime == 'calm':
+        risk_score += 1
+    elif atr_regime == 'explosive':
+        risk_score -= 1
+
+    risk_grade = _score_to_grade(risk_score, max_score=7)
+
+    # --- Summary ---
+    grade_str = f'{trend_grade}/{timing_grade}/{risk_grade}'
+    parts = []
+    if trend_grade in ('A', 'B'):
+        parts.append('Strong trend')
+    elif trend_grade in ('D', 'F'):
+        parts.append('Weak trend')
+    if timing_grade in ('A', 'B'):
+        parts.append('good entry')
+    elif timing_grade in ('D', 'F'):
+        parts.append('bad timing')
+    if risk_grade in ('A', 'B'):
+        parts.append('favorable R:R')
+    elif risk_grade in ('D', 'F'):
+        parts.append('poor R:R')
+
+    summary = f'[{grade_str}] {", ".join(parts)}' if parts else f'[{grade_str}]'
+
+    return {
+        'trend_grade': trend_grade,
+        'timing_grade': timing_grade,
+        'risk_grade': risk_grade,
+        'conviction_summary': summary,
+    }
+
+
+def _score_to_grade(score: int, max_score: int) -> str:
+    ratio = score / max_score if max_score > 0 else 0
+    if ratio >= 0.8:
+        return 'A'
+    if ratio >= 0.6:
+        return 'B'
+    if ratio >= 0.4:
+        return 'C'
+    if ratio >= 0.2:
+        return 'D'
+    return 'F'
+
+
+def _classify_market(symbol: str) -> str:
+    clean = str(symbol).strip().replace('.TWO', '').replace('.TW', '')
+    return 'TW' if (clean.isdigit() or symbol == 'TWII') else 'US'
+
+
+def apply_relative_strength(results: list[dict]) -> None:
+    """Rank stocks by 6-month momentum within each market. Mutates results in place."""
+    buckets: dict[str, list[tuple[int, float]]] = {}
+    for i, r in enumerate(results):
+        if r.get('mom_6m') is None:
+            continue
+        market = r.get('market', _classify_market(r.get('symbol', '')))
+        buckets.setdefault(market, []).append((i, r.get('mom_6m', 0)))
+
+    for market, scored in buckets.items():
+        scored.sort(key=lambda x: x[1], reverse=True)
+        n = len(scored)
+        for rank, (idx, _) in enumerate(scored, 1):
+            results[idx]['rs_rank'] = rank
+            results[idx]['rs_percentile'] = round((1 - (rank - 1) / n) * 100, 1)
+
+
+def apply_rs_guard(results: list[dict]) -> None:
+    """Suppress EXIT for top-quartile relative strength stocks. Mutates results."""
+    for r in results:
+        if r.get('action') != 'EXIT':
+            continue
+        rs_pct = r.get('rs_percentile', 0)
+        price = r.get('price', 0)
+        sma50 = r.get('sma50')
+        if rs_pct >= 75:
+            r['action'] = 'HOLD'
+            r['reason'] = 'Strong momentum (RS top 25%) — trail stop at SMA50'
+        elif sma50 and price >= sma50:
+            r['action'] = 'HOLD'
+            r['reason'] = f'Wave {r.get("wave", "?")} — price above SMA50, tighten stop'
 
 
 def apply_market_regime(results: list[dict]) -> tuple[str, str, float]:
@@ -494,3 +696,31 @@ def apply_market_regime(results: list[dict]) -> tuple[str, str, float]:
         msg = f'{exit_pct:.0f}% EXIT/AVOID — market conditions favorable'
 
     return regime, msg, exit_pct
+
+
+def apply_rs_score_adjustment(results: list[dict]) -> None:
+    """Adjust scores based on relative strength ranking. Mutates results."""
+    cfg = SCORING_CONFIG
+    for r in results:
+        rs_pct = r.get('rs_percentile', 50)
+        score = r.get('score', 0)
+        if score == 0:
+            continue
+        if rs_pct >= 75:
+            r['score'] = score + cfg['rs_top_quartile_boost']
+        elif rs_pct <= 25:
+            r['score'] = score + cfg['rs_bottom_quartile_penalty']
+
+
+def reclassify_borderline(results: list[dict]) -> None:
+    """Re-evaluate borderline BUY/WATCH after RS score adjustment. Mutates results."""
+    cfg = SCORING_CONFIG
+    for r in results:
+        action = r.get('action', '')
+        score = r.get('score', 0)
+        if action == 'WATCH' and score >= cfg['buy_score']:
+            r['action'] = 'BUY'
+            r['reason'] = f"Score {score}/100 (RS-boosted): {r.get('reason', '')}"
+        elif action in ('BUY', 'BUY DIP') and score < cfg['watch_score']:
+            r['action'] = 'WATCH'
+            r['reason'] = f"Score {score}/100 (RS-penalized): {r.get('reason', '')}"

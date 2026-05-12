@@ -1,0 +1,44 @@
+[
+  {
+    "symbol": "AAPL",
+    "date_range_start": "2010-01-19 00:00:00",
+    "date_range_end": "2025-01-09 00:00:00",
+    "strategy": "multiframe",
+    "total_return_pct": 29.019990973680738,
+    "total_profit": 29019.990973680735,
+    "sharpe_ratio": 0.4246172034204101,
+    "max_drawdown_pct": 5.52433287497079,
+    "total_trades": 118,
+    "win_rate": 0.5254237288135594,
+    "profit_factor": 2.447593576853012,
+    "initial_capital": 100000,
+    "final_capital": 129019.99097368073,
+    "buy_hold_return_pct": 56.6901694865684,
+    "buy_hold_annual_pct": 2.4803564300784675,
+    "alpha": -27.670178512887663,
+    "backtest_years": 18.3,
+    "wave_breakdown": {
+      "1": {
+        "trades": 2,
+        "win_rate": 1.0,
+        "total_profit": 1452.0912075491215,
+        "avg_profit": 726.0456037745607,
+        "avg_r": 6.377364105856468
+      },
+      "3": {
+        "trades": 16,
+        "win_rate": 0.8125,
+        "total_profit": 25064.228743808206,
+        "avg_profit": 1566.5142964880129,
+        "avg_r": 3.8482035051932724
+      },
+      "6": {
+        "trades": 100,
+        "win_rate": 0.47,
+        "total_profit": 2503.6710223234018,
+        "avg_profit": 25.036710223234017,
+        "avg_r": 0.06623741831103262
+      }
+    }
+  }
+]

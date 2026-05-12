@@ -23,10 +23,24 @@ def main():
         '--symbols', type=str, default=None,
         help='Comma-separated list of symbols to backtest (e.g. AAPL,MSFT,TSLA)'
     )
+    parser.add_argument(
+        '--window-size', type=int, default=504,
+        help='Walk-forward window size in bars (default: 504 = ~2 years)'
+    )
+    parser.add_argument(
+        '--step-size', type=int, default=63,
+        help='Walk-forward step size in bars (default: 63 = ~1 quarter)'
+    )
+    parser.add_argument(
+        '--rs-benchmark', action='store_true',
+        help='Run quarterly RS rotation benchmark for comparison'
+    )
     args = parser.parse_args()
 
     setup_logging()
     config = load_config()
+    config['backtest_window_size'] = args.window_size
+    config['backtest_step_size'] = args.step_size
 
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(',') if s.strip()]
@@ -43,6 +57,9 @@ def main():
 
     if args.monte_carlo:
         backtester.run_monte_carlo(n_simulations=args.mc_simulations)
+
+    if args.rs_benchmark:
+        backtester.run_rs_rotation_benchmark(symbols)
 
 
 if __name__ == "__main__":
