@@ -172,21 +172,30 @@ def analyze_stock(symbol: str, df: pd.DataFrame) -> dict | None:
     impulse_high = pos.get('impulse_high', None)
     impulse_low = pos.get('impulse_low', None)
     fib_retrace = None
-    if impulse_high and impulse_low and impulse_high > impulse_low:
+    if impulse_high is not None and impulse_low is not None and impulse_high > impulse_low:
         imp_range = impulse_high - impulse_low
         fib_382 = impulse_high - imp_range * 0.382
         fib_500 = impulse_high - imp_range * 0.500
         fib_618 = impulse_high - imp_range * 0.618
         for level, name in [(fib_382, '38.2%'), (fib_500, '50%'), (fib_618, '61.8%')]:
-            if abs(price - level) / price < 0.03:
+            if price > 0 and abs(price - level) / price < 0.03:
                 fib_retrace = name
                 break
 
     stop = w2_low * 0.98 * stop_mult + price * (1 - stop_mult) if w2_low else price * 0.95
     target1 = w2_end + w1_range * 1.618 if w1_range > 0 else price * 1.10
     target2 = w2_end + w1_range * 2.618 if w1_range > 0 else price * 1.20
+
+    # Sanity checks: stop must be below price, targets must be above price
+    if stop <= 0 or stop >= price:
+        stop = price * 0.95
+    if target1 <= price:
+        target1 = price * 1.10
+    if target2 <= target1:
+        target2 = price * 1.20
+
     risk = abs(price - stop)
-    reward = abs(target1 - price)
+    reward = target1 - price
     rr = reward / risk if risk > 0 else 0
 
     # Tier 3: ATR trailing stop
@@ -452,6 +461,12 @@ def classify_action(r: dict) -> tuple[str, str]:
     score = max(0, score)
     r['score'] = score
     top_factors = ', '.join(factors[:3])
+
+    # R:R sanity gate: never recommend BUY with unfavorable risk/reward
+    if rr < 1.0:
+        if score >= cfg['watch_score']:
+            return 'WATCH', f'Score {score}/100 — R:R too low ({rr:.1f}x)'
+        return 'WAIT', f'Score {score}/100 — R:R too low ({rr:.1f}x)'
 
     if score >= cfg['strong_buy_score'] and wave == 3:
         return 'STRONG BUY', f'Score {score}/100: {top_factors}'

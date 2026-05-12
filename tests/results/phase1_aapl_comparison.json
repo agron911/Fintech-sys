@@ -1,5 +1,5 @@
 {
-  "test_date": "2026-05-11 14:55:52",
+  "test_date": "2026-05-11 20:39:53",
   "symbol": "AAPL",
   "baseline": {
     "initial_capital": 100000,
@@ -18,10 +18,10 @@
     "avg_r_multiple": 0,
     "max_drawdown_pct": 0,
     "sharpe_ratio": 0,
-    "buy_hold_return_pct": 83929.29170504348,
-    "buy_hold_annual_pct": 31.863513013103372,
-    "buy_hold_max_dd_pct": 60.866741160684334,
-    "backtest_years": 24.3
+    "buy_hold_return_pct": 83745.95685985302,
+    "buy_hold_annual_pct": 31.83938748053132,
+    "buy_hold_max_dd_pct": 60.86673856444631,
+    "backtest_years": 24.4
   },
   "phase1": {
     "initial_capital": 100000,
@@ -40,10 +40,10 @@
     "avg_r_multiple": 0,
     "max_drawdown_pct": 0,
     "sharpe_ratio": 0,
-    "buy_hold_return_pct": 83929.29170504348,
-    "buy_hold_annual_pct": 31.863513013103372,
-    "buy_hold_max_dd_pct": 60.866741160684334,
-    "backtest_years": 24.3
+    "buy_hold_return_pct": 83745.95685985302,
+    "buy_hold_annual_pct": 31.83938748053132,
+    "buy_hold_max_dd_pct": 60.86673856444631,
+    "backtest_years": 24.4
   },
   "improvements": {
     "win_rate_delta": 0,
