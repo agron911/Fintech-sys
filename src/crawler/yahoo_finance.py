@@ -55,20 +55,18 @@ def _ensure_init():
     _initialized = True
 
 def should_update_file(file_path, max_age_days=UPDATE_INTERVAL_DAYS):
-    """Check if a file should be updated based on file age AND data recency."""
+    """Check if a file should be updated based on data recency (not file mtime)."""
     if not file_path.exists():
         return True
 
-    file_age = (dt.datetime.now() - dt.datetime.fromtimestamp(file_path.stat().st_mtime)).days
-    if file_age >= max_age_days:
-        return True
-
-    # Also check if the data inside is stale (last row date vs today)
+    # Check the actual last data date inside the file — this is the real freshness indicator.
+    # File mtime is unreliable because scans touch files without adding new data.
     try:
         with open(file_path, 'rb') as f:
             f.seek(0, 2)
             size = f.tell()
-            # Read last 200 bytes to find the last line
+            if size < 50:
+                return True
             f.seek(max(0, size - 200))
             last_lines = f.read().decode('utf-8', errors='ignore').strip().split('\n')
             last_line = last_lines[-1]
@@ -79,9 +77,11 @@ def should_update_file(file_path, max_age_days=UPDATE_INTERVAL_DAYS):
                 logger.info(f"Data in {file_path.name} is {data_age} days old, re-fetching")
                 return True
     except Exception:
-        pass  # If we can't parse, fall through to skip
+        # Can't parse last date — check file mtime as fallback
+        file_age = (dt.datetime.now() - dt.datetime.fromtimestamp(file_path.stat().st_mtime)).days
+        if file_age >= max_age_days:
+            return True
 
-    logger.info(f"Skipping {file_path.name} - updated {file_age} days ago, data is current")
     return False
 
 def delete_files():
@@ -123,8 +123,10 @@ def fetch_stock_data(stock_code, suffix, start, end):
     Delegates to YahooFinanceCrawler for consistent date formatting and retry logic.
     """
     _ensure_init()
+    start_str = str(start).split(' ')[0] if start else '2002-01-01'
+    end_str = str(end).split(' ')[0] if end else '2026-12-31'
     crawler = YahooFinanceCrawler(config)
-    df = crawler.fetch_data(stock_code, str(start), str(end), suffix=suffix)
+    df = crawler.fetch_data(stock_code, start_str, end_str, suffix=suffix)
     return df
 
 

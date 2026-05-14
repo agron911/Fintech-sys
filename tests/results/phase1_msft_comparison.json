@@ -1,5 +1,5 @@
 {
-  "test_date": "2026-05-11 20:39:53",
+  "test_date": "2026-05-13 13:51:57",
   "symbol": "MSFT",
   "baseline": {
     "initial_capital": 100000,
@@ -18,9 +18,9 @@
     "avg_r_multiple": 0,
     "max_drawdown_pct": 0,
     "sharpe_ratio": 0,
-    "buy_hold_return_pct": 1919.94551676632,
-    "buy_hold_annual_pct": 13.135883327002308,
-    "buy_hold_max_dd_pct": 57.94192236455058,
+    "buy_hold_return_pct": 1896.0091936955703,
+    "buy_hold_annual_pct": 13.07895485803645,
+    "buy_hold_max_dd_pct": 57.94194820222198,
     "backtest_years": 24.4
   },
   "phase1": {
@@ -40,9 +40,9 @@
     "avg_r_multiple": 0,
     "max_drawdown_pct": 0,
     "sharpe_ratio": 0,
-    "buy_hold_return_pct": 1919.94551676632,
-    "buy_hold_annual_pct": 13.135883327002308,
-    "buy_hold_max_dd_pct": 57.94192236455058,
+    "buy_hold_return_pct": 1896.0091936955703,
+    "buy_hold_annual_pct": 13.07895485803645,
+    "buy_hold_max_dd_pct": 57.94194820222198,
     "backtest_years": 24.4
   },
   "improvements": {

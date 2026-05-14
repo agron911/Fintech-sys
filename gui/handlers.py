@@ -149,7 +149,9 @@ def handle_crawl_data(self, event):
             wx.CallAfter(self.update_status, "Auto-scanning after data update...", 0)
             handle_scan_all_stocks(self, event)
         else:
-            wx.CallAfter(self.update_status, "Crawl complete", 0)
+            if hasattr(self, 'scan_cache'):
+                self.scan_cache.clear_cache()
+            wx.CallAfter(self.update_status, "Crawl complete — press Ctrl+S to scan", 0)
             wx.PostEvent(self, EnableButtonsEvent(enable=True))
 
     except Exception as e:
@@ -420,60 +422,65 @@ def handle_scan_all_stocks(self, event):
         no_data = 0
         total = len(all_stocks)
 
-        for i, symbol in enumerate(all_stocks, 1):
-            try:
-                wx.CallAfter(self.update_progress, i, total)
-                wx.CallAfter(self.update_status, f"Analyzing {symbol}... [{i}/{total}]", 0)
+        # Pass 1: Analyze all stocks in parallel (no classification yet)
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from src.analysis.core.signal_scoring import _analyze_single
 
-                file_path = os.path.join(self.config['stk2_dir'], f"{symbol}.txt")
-                if not os.path.exists(file_path):
-                    no_data += 1
-                    continue
+        max_workers = min(os.cpu_count() - 1, 8) if os.cpu_count() and os.cpu_count() > 1 else 1
+        work_items = []
+        for symbol in all_stocks:
+            file_path = os.path.join(self.config['stk2_dir'], f"{symbol}.txt")
+            if os.path.exists(file_path):
+                work_items.append((symbol, self.config['stk2_dir']))
+            else:
+                no_data += 1
 
-                df = load_and_preprocess_data(file_path)
-                if df is None or len(df) < 60:
-                    no_data += 1
-                    continue
+        wx.PostEvent(self, UpdateOutputEvent(
+            message=f"Analyzing {len(work_items)} stocks using {max_workers} workers...\n"
+        ))
 
-                r = analyze_stock(symbol, df)
-                if r is None:
+        raw_results = []
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_analyze_single, item): item[0] for item in work_items}
+            for i, future in enumerate(as_completed(futures), 1):
+                symbol = futures[future]
+                wx.CallAfter(self.update_progress, i, len(work_items))
+                wx.CallAfter(self.update_status, f"Analyzed {symbol} [{i}/{len(work_items)}]", 0)
+                try:
+                    r = future.result(timeout=60)
+                    if r:
+                        r['market'] = 'TW' if (str(symbol).strip().replace('.TWO','').replace('.TW','').isdigit() or symbol == 'TWII') else 'US'
+                        if symbol in dup_symbols:
+                            r['data_warning'] = 'DUPLICATE DATA'
+                        raw_results.append(r)
+                except Exception as e:
                     wx.PostEvent(self, UpdateOutputEvent(
-                        message=f"[{i}/{total}] - {symbol}: No pattern\n"
+                        message=f"  x {symbol}: Error - {str(e)}\n"
                     ))
-                    continue
 
-                action, reason = classify_action(r)
-                r['action'] = action
-                r['reason'] = reason
-                r['market'] = 'TW' if (str(symbol).strip().replace('.TW','').replace('.TWO','').isdigit() or symbol == 'TWII') else 'US'
-                if symbol in dup_symbols:
-                    r['data_warning'] = 'DUPLICATE DATA'
-                r.update(grade_conviction(r))
+        # Between passes: compute sector direction from aggregate results
+        from src.analysis.market_structure import compute_sector_direction_map
+        sector_dir_map = compute_sector_direction_map(raw_results)
 
-                results.append(r)
+        # Pass 2: Classify with sector rotation context
+        results = []
+        icon_map = {
+            'STRONG BUY': '>>', 'BUY': '> ', 'BUY DIP': '> ',
+            'BUY CORRECTION': '> ', 'WATCH': '~ ', 'EXIT': '! ',
+            'AVOID': 'x ', 'HOLD': '. ', 'WAIT': '. ', 'SKIP': '  ',
+        }
+        for r in raw_results:
+            r['sector_direction'] = sector_dir_map.get(r['symbol'], 'neutral')
+            action, reason = classify_action(r)
+            r['action'] = action
+            r['reason'] = reason
+            r.update(grade_conviction(r))
+            results.append(r)
 
-                icon_map = {
-                    'STRONG BUY': '>>',
-                    'BUY': '> ',
-                    'BUY DIP': '> ',
-                    'BUY CORRECTION': '> ',
-                    'WATCH': '~ ',
-                    'EXIT': '! ',
-                    'AVOID': 'x ',
-                    'HOLD': '. ',
-                    'WAIT': '. ',
-                    'SKIP': '  ',
-                }
-                icon = icon_map.get(action, '  ')
-                wx.PostEvent(self, UpdateOutputEvent(
-                    message=f"[{i}/{total}] {icon} {symbol}: {action} (score {r.get('score', 0)}) {reason}\n"
-                ))
-
-            except Exception as e:
-                wx.PostEvent(self, UpdateOutputEvent(
-                    message=f"[{i}/{total}] x {symbol}: Error - {str(e)}\n"
-                ))
-                continue
+            icon = icon_map.get(action, '  ')
+            wx.PostEvent(self, UpdateOutputEvent(
+                message=f"  {icon} {r['symbol']}: {action} (score {r.get('score', 0)}) {reason}\n"
+            ))
 
         # Post-processing pipeline
         apply_relative_strength(results)
@@ -592,6 +599,8 @@ def handle_scan_all_stocks(self, event):
         }
         wx.CallAfter(self.update_dashboard, scan_results_dict)
         wx.CallAfter(self.notebook.SetSelection, 0)  # Dashboard
+        if hasattr(self, 'market_choice'):
+            wx.CallAfter(self.market_choice.SetSelection, 0)  # Reset to "All Markets"
 
         # Market structure dashboard
         ms_text = format_market_structure(market_structure)

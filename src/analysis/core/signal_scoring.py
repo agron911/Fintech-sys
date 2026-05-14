@@ -18,6 +18,8 @@ from src.analysis.core.wave_personality import validate_wave_personality
 # Scoring configuration
 # ---------------------------------------------------------------------------
 SCORING_CONFIG = {
+    'min_avg_volume': 500_000,
+    'min_avg_dollar_volume': 1_000_000,
     'min_confidence': 0.20,
     'wave_c_rsi_max': 40,
     'wave_scores': {1: 15, 2: 25, 3: 30, 4: 18, 5: 5},
@@ -68,7 +70,19 @@ SCORING_CONFIG = {
     'correction_bonus_pts': 20,
     'rs_top_quartile_boost': 10,
     'rs_bottom_quartile_penalty': -5,
+    'sector_leading_pts': 5,
+    'sector_lagging_pts': -5,
 }
+
+
+def _analyze_single(args: tuple) -> dict | None:
+    """Top-level worker function for ProcessPoolExecutor (must be picklable)."""
+    symbol, data_dir = args
+    from src.utils.common_utils import load_stock_data
+    df = load_stock_data(symbol, data_dir)
+    if df is None:
+        return None
+    return analyze_stock(symbol, df)
 
 
 def analyze_stock(symbol: str, df: pd.DataFrame) -> dict | None:
@@ -78,6 +92,17 @@ def analyze_stock(symbol: str, df: pd.DataFrame) -> dict | None:
 
     if len(df) > 500:
         df = df.iloc[-500:]
+
+    # Liquidity filter: skip illiquid stocks
+    cfg = SCORING_CONFIG
+    if 'volume' in df.columns and len(df) >= 60:
+        avg_vol = float(df['volume'].iloc[-60:].mean())
+        avg_dollar_vol = float((df['volume'].iloc[-60:] * df['close'].iloc[-60:]).mean())
+        if avg_vol < cfg['min_avg_volume'] or avg_dollar_vol < cfg['min_avg_dollar_volume']:
+            return None
+    else:
+        avg_vol = 0.0
+        avg_dollar_vol = 0.0
 
     peaks, troughs = detect_peaks_troughs_enhanced(df, column='close')
     if len(peaks) < 3 or len(troughs) < 3:
@@ -271,6 +296,8 @@ def analyze_stock(symbol: str, df: pd.DataFrame) -> dict | None:
         'trailing_stop': trailing_stop,
         'size_mult': size_mult,
         'size_note': size_note,
+        'avg_volume': avg_vol,
+        'avg_dollar_volume': avg_dollar_vol,
     }
 
 
@@ -290,6 +317,10 @@ def classify_action(r: dict) -> tuple[str, str]:
     if trend == 'bearish':
         r['score'] = 0
         return 'AVOID', 'Bearish trend'
+    atr_pct_val = r.get('atr_pct', 0)
+    if atr_pct_val > 10:
+        r['score'] = 0
+        return 'AVOID', f'Extreme volatility (ATR {atr_pct_val:.1f}% of price)'
     if exit_warn and wave >= 5:
         sma50 = r.get('sma50')
         price = r.get('price', 0)
@@ -457,6 +488,17 @@ def classify_action(r: dict) -> tuple[str, str]:
     elif vr < cfg['vol_low_threshold']:
         score += cfg['vol_low_pts']
         factors.append(f'Low volume ({cfg["vol_low_pts"]})')
+
+    # --- Tier 3: Sector rotation ---
+    sector_dir = r.get('sector_direction')
+    if sector_dir == 'leading':
+        pts = cfg['sector_leading_pts']
+        score += pts
+        factors.append(f'Leading sector (+{pts})')
+    elif sector_dir == 'lagging':
+        pts = cfg['sector_lagging_pts']
+        score += pts
+        factors.append(f'Lagging sector ({pts})')
 
     score = max(0, score)
     r['score'] = score

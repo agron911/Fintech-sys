@@ -45,7 +45,7 @@ from src.analysis.core.signal_scoring import (
     _classify_market,
     SCORING_CONFIG,
 )
-from src.analysis.market_structure import analyze_market_structure, format_market_structure
+from src.analysis.market_structure import analyze_market_structure, format_market_structure, compute_sector_direction_map
 from src.crawler.yahoo_finance import fetch_stock_data, save_stock_data
 
 # Extended universe of liquid US stocks across sectors (~180 stocks)
@@ -285,22 +285,48 @@ def main():
 
     print("\nScanning {} stocks...".format(total))
 
-    for idx, symbol in enumerate(symbols, 1):
-        sys.stdout.write("\r  Scanning stocks... [{}/{}] {}   ".format(idx, total, symbol))
-        sys.stdout.flush()
-        df = load_stock(symbol, data_dir)
-        if df is None:
+    # Pass 1: Analyze all stocks in parallel (no classification yet)
+    import os
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from src.analysis.core.signal_scoring import _analyze_single
+
+    max_workers = min(os.cpu_count() - 1, 8) if os.cpu_count() and os.cpu_count() > 1 else 1
+    work_items = []
+    for symbol in symbols:
+        filepath = Path(data_dir) / f"{symbol}.txt"
+        if filepath.exists():
+            work_items.append((symbol, str(data_dir)))
+        else:
             no_data += 1
-            continue
-        r = analyze(symbol, df)
-        if r:
-            action, reason = classify_action(r)
-            r['action'] = action
-            r['reason'] = reason
-            r['market'] = _classify_market(symbol)
-            r.update(grade_conviction(r))
-            results.append(r)
+
+    raw_results = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_analyze_single, item): item[0] for item in work_items}
+        for i, future in enumerate(as_completed(futures), 1):
+            symbol = futures[future]
+            sys.stdout.write("\r  Analyzing stocks... [{}/{}] {}   ".format(i, len(work_items), symbol))
+            sys.stdout.flush()
+            try:
+                r = future.result(timeout=60)
+                if r:
+                    r['market'] = _classify_market(symbol)
+                    raw_results.append(r)
+            except Exception:
+                pass
     sys.stdout.write("\n")
+
+    # Between passes: compute sector direction from aggregate results
+    sector_dir_map = compute_sector_direction_map(raw_results)
+
+    # Pass 2: Classify with sector rotation context
+    results = []
+    for r in raw_results:
+        r['sector_direction'] = sector_dir_map.get(r['symbol'], 'neutral')
+        action, reason = classify_action(r)
+        r['action'] = action
+        r['reason'] = reason
+        r.update(grade_conviction(r))
+        results.append(r)
 
     # --- Post-processing pipeline ---
     apply_relative_strength(results)
@@ -369,6 +395,14 @@ def main():
     print("  Market regime: {}{}{}  ({})".format(
         regime_colors.get(market_regime, ''), market_regime, '\033[0m', regime_msg))
     print("=" * 90)
+
+    # Action summary
+    action_parts = []
+    if buys: action_parts.append(f'\033[32mBUY {len(buys)}\033[0m')
+    if exits: action_parts.append(f'\033[31mEXIT {len(exits)}\033[0m')
+    if watches: action_parts.append(f'\033[33mWATCH {len(watches)}\033[0m')
+    print(f"\n  ACTION: {' | '.join(action_parts) if action_parts else 'No signals'}")
+    print()
 
     if buys:
         print()

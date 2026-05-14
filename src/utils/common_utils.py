@@ -3,6 +3,28 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+def load_stock_data(symbol: str, data_dir: str) -> pd.DataFrame:
+    """Load a single stock's TSV data file into a clean DataFrame.
+
+    Returns None if file missing, empty, or unparseable.
+    """
+    filepath = Path(data_dir) / f"{symbol}.txt"
+    if not filepath.exists():
+        return None
+    try:
+        df = pd.read_csv(filepath, sep='\t')
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df = df.dropna(subset=['Date']).set_index('Date')
+        df.columns = [c.lower() for c in df.columns]
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna(subset=['close'])
+        return df if len(df) > 0 else None
+    except Exception:
+        return None
+
+
 # -------- Data Loading & Preprocessing --------
 def load_and_preprocess_data(file_path: str) -> pd.DataFrame:
     """

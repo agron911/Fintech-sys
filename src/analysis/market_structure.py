@@ -358,6 +358,22 @@ def _compute_sector_rotation(results: List[Dict]) -> List[Dict]:
     return rotation
 
 
+def compute_sector_direction_map(results: List[Dict]) -> Dict[str, str]:
+    """Compute per-symbol sector direction from aggregate results.
+
+    Returns dict mapping symbol -> 'leading'|'lagging'|'neutral'.
+    """
+    rotation = _compute_sector_rotation(results)
+    sector_dir = {s['sector']: s['direction'] for s in rotation}
+
+    symbol_dir = {}
+    for r in results:
+        sym = r.get('symbol', '')
+        sector = SECTOR_MAP.get(sym, 'Other')
+        symbol_dir[sym] = sector_dir.get(sector, 'neutral')
+    return symbol_dir
+
+
 def _safe_mean(values: list) -> float:
     nums = [v for v in values if v is not None and v == v]  # exclude NaN
     return sum(nums) / len(nums) if nums else 0

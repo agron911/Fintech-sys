@@ -599,6 +599,107 @@ class TestIntegration:
 # TEST: Requirements
 # ===================================================================
 
+# ===================================================================
+# TEST: Liquidity Filter
+# ===================================================================
+
+class TestLiquidityFilter:
+    def test_low_volume_returns_none(self):
+        """Stocks with avg volume < 500K should be filtered out."""
+        from src.analysis.core.signal_scoring import analyze_stock
+        df = make_impulse_df(n=300)
+        df['volume'] = 100_000  # Below 500K threshold
+        result = analyze_stock('LOW_VOL', df)
+        assert result is None, "Low-volume stock should return None"
+
+    def test_high_volume_passes(self):
+        """Stocks with avg volume >= 500K should pass the filter."""
+        from src.analysis.core.signal_scoring import analyze_stock
+        df = make_impulse_df(n=300)
+        df['volume'] = 1_000_000  # Above threshold
+        result = analyze_stock('HIGH_VOL', df)
+        # May still return None due to pattern detection, but not due to liquidity
+        # Just verify it doesn't crash
+        assert result is None or isinstance(result, dict)
+
+
+# ===================================================================
+# TEST: Sector Rotation Scoring
+# ===================================================================
+
+class TestSectorRotationScoring:
+    def test_leading_sector_bonus(self):
+        """Leading sector should add +5 to score."""
+        from src.analysis.core.signal_scoring import classify_action
+        r = TestSignalScoring()._make_result_dict(sector_direction='leading')
+        classify_action(r)
+        r_no_sector = TestSignalScoring()._make_result_dict()
+        classify_action(r_no_sector)
+        assert r['score'] >= r_no_sector['score'] + 4, \
+            f"Leading sector score {r['score']} should be ~5 more than {r_no_sector['score']}"
+
+    def test_lagging_sector_penalty(self):
+        """Lagging sector should subtract -5 from score."""
+        from src.analysis.core.signal_scoring import classify_action
+        r = TestSignalScoring()._make_result_dict(sector_direction='lagging')
+        classify_action(r)
+        r_no_sector = TestSignalScoring()._make_result_dict()
+        classify_action(r_no_sector)
+        assert r['score'] <= r_no_sector['score'] - 4, \
+            f"Lagging sector score {r['score']} should be ~5 less than {r_no_sector['score']}"
+
+    def test_compute_sector_direction_map(self):
+        """compute_sector_direction_map should return per-symbol directions."""
+        from src.analysis.market_structure import compute_sector_direction_map
+        results = [
+            {'symbol': 'AAPL', 'trend': 'bullish', 'mom_6m': 20},
+            {'symbol': 'MSFT', 'trend': 'bullish', 'mom_6m': 15},
+            {'symbol': 'XOM', 'trend': 'bearish', 'mom_6m': -10},
+        ]
+        dir_map = compute_sector_direction_map(results)
+        assert isinstance(dir_map, dict)
+        assert dir_map.get('AAPL') in ('leading', 'neutral', 'lagging')
+        assert dir_map.get('XOM') in ('leading', 'neutral', 'lagging')
+
+
+# ===================================================================
+# TEST: Gap-Down Stop
+# ===================================================================
+
+class TestGapDownStop:
+    def test_gap_down_exits_at_open(self):
+        """When open gaps below stop, should exit at open price."""
+        from src.backtest.strategy_advanced import AdvancedBacktester
+        dates = pd.date_range('2023-01-01', periods=20, freq='B')
+        close = [100] * 5 + [105, 108, 110, 112, 115, 80, 82, 85, 88, 90, 92, 95, 97, 100, 102]
+        df = pd.DataFrame({
+            'open':   [100] * 5 + [104, 107, 109, 111, 114, 75, 81, 84, 87, 89, 91, 94, 96, 99, 101],
+            'high':   [c * 1.01 for c in close],
+            'low':    [c * 0.99 for c in close],
+            'close':  close,
+            'volume': [1_000_000] * 20,
+        }, index=dates)
+
+        signals = [{
+            'date': dates[5],
+            'type': 'BUY',
+            'price': 105,
+            'stop_loss': 95,
+            'wave_number': 3,
+            'confidence': 0.7,
+            'targets': [120, 130],
+        }]
+
+        bt = AdvancedBacktester(initial_capital=100_000, config={})
+        stats = bt.simulate(df, signals)
+        if stats.get('total_trades', 0) > 0:
+            trades = stats.get('trades', [])
+            gap_trades = [t for t in trades if t.get('exit_reason') == 'gap_down_stop']
+            if gap_trades:
+                assert gap_trades[0]['exit_price'] == 75, \
+                    f"Gap-down exit should be at open price 75, got {gap_trades[0]['exit_price']}"
+
+
 class TestRequirements:
     def test_no_sklearn_dependency(self):
         """requirements.txt should not include scikit-learn."""

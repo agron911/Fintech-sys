@@ -1086,7 +1086,14 @@ class AdvancedBacktester:
 
             current_price = df.loc[current_date, 'close']
 
-            # 1. Check stop loss (always active)
+            # 1a. Check gap-down: if open gaps below stop, exit at open (realistic fill)
+            if 'open' in df.columns:
+                open_price = df.loc[current_date, 'open']
+                if open_price <= position['stop_loss']:
+                    positions_to_close.append((entry_date, open_price, 'gap_down_stop'))
+                    continue
+
+            # 1b. Check stop loss at close (intraday breach)
             if current_price <= position['stop_loss']:
                 positions_to_close.append((entry_date, current_price, 'stop_loss'))
                 continue

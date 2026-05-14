@@ -982,25 +982,44 @@ class MyFrame(wx.Frame):
     # Auto-load last scan
     # ------------------------------------------------------------------
     def auto_load_last_scan(self):
-        """Show last scan info on startup with stale warning."""
+        """Check cache validity on startup. Invalidate if data is newer than cache."""
         try:
             cache_info = self.scan_cache.get_cache_info()
-            if cache_info and cache_info['exists']:
-                age = cache_info.get('age_formatted', 'unknown')
-                patterns = cache_info.get('patterns_found', 0)
-                total = cache_info.get('total_scanned', 0)
+            if not cache_info or not cache_info['exists']:
+                self.output.AppendText("\nNo cached scan results. Press Ctrl+S to scan.\n")
+                return
 
-                # Check staleness
-                age_hours = cache_info.get('age_hours', 0)
-                stale_warning = ""
-                if age_hours > 24:
-                    stale_warning = f"\n  WARNING: Scan is {age_hours:.0f}h old — consider re-scanning!\n"
+            # Check if data files are newer than cache
+            from datetime import datetime
+            cache_ts = datetime.fromisoformat(cache_info['timestamp'])
+            data_dir = Path(self.config.get('stk2_dir', 'data/raw'))
+            data_files = list(data_dir.glob('*.txt'))
 
+            if data_files:
+                newest_data = max(f.stat().st_mtime for f in data_files)
+                data_ts = datetime.fromtimestamp(newest_data)
+                if data_ts > cache_ts:
+                    self.output.AppendText(
+                        f"\nData was updated since last scan — cache is outdated.\n"
+                        f"Press Ctrl+S to scan with fresh data.\n\n"
+                    )
+                    self.update_status("Cache outdated — re-scan needed", 0)
+                    return
+
+            age = cache_info.get('age_formatted', 'unknown')
+            patterns = cache_info.get('patterns_found', 0)
+            total = cache_info.get('total_scanned', 0)
+            age_hours = cache_info.get('age_hours', 0)
+
+            if age_hours > 24:
+                self.output.AppendText(
+                    f"\nLast scan: {age} | {patterns}/{total} patterns found\n"
+                    f"  WARNING: Scan is {age_hours:.0f}h old — press Ctrl+S to re-scan.\n\n"
+                )
+                self.update_status(f"Stale scan: {age}", 0)
+            else:
                 self.output.AppendText(f"\nLast scan: {age} | {patterns}/{total} patterns found\n")
-                if stale_warning:
-                    self.output.AppendText(stale_warning)
-                self.output.AppendText("Press Ctrl+L to load last scan, or Ctrl+S to run new scan.\n\n")
-
+                self.output.AppendText("Press Ctrl+L to load, or Ctrl+S for fresh scan.\n\n")
                 self.update_status(f"Last scan: {age}", 0)
         except Exception as e:
             logger.debug(f"Auto-load check failed: {e}")
@@ -1058,6 +1077,31 @@ class MyFrame(wx.Frame):
             H.append(f"<h2>Signal Dashboard{market_label}</h2>")
             if scan_time:
                 H.append(f"<font color='#888' size='2'>{scan_time}</font>")
+
+            # ── ACTION SUMMARY BANNER ──
+            n_buys = len(buys)
+            n_exits = len(exits)
+            n_watches = len(watches)
+            banner_parts = []
+            if n_buys:
+                banner_parts.append(f"<font color='#1a7a42'><b>BUY {n_buys}</b></font>")
+            if n_exits:
+                banner_parts.append(f"<font color='#c0392b'><b>EXIT {n_exits}</b></font>")
+            if n_watches:
+                banner_parts.append(f"<font color='#b7950b'><b>WATCH {n_watches}</b></font>")
+            banner_colors = {
+                'FAVORABLE': '#d5f5e3', 'MIXED': '#fef9e7',
+                'CAUTION': '#fdedec', '': '#f0f0f0', 'UNKNOWN': '#f0f0f0',
+            }
+            banner_bg = banner_colors.get(regime, '#f0f0f0')
+            action_text = ' | '.join(banner_parts) if banner_parts else 'No signals'
+            H.append(
+                f"<table bgcolor='{banner_bg}' width='100%' cellpadding='10' "
+                f"style='border-radius:6px;margin:8px 0;'><tr><td align='center'>"
+                f"<font size='4'>ACTION: {action_text}</font>"
+                f"<br><font size='2'>Regime: <b>{regime or 'UNKNOWN'}</b></font>"
+                f"</td></tr></table>"
+            )
 
             # ── CORE INDEX SUMMARY ──
             us_count = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'US')
@@ -1183,11 +1227,22 @@ class MyFrame(wx.Frame):
                 H.append(f"<td bgcolor='#ecf0f1'>Trend Strong <b>{trend_strong}/{len(buys)}</b></td>")
                 H.append("</tr></table>")
 
-            # ── TOP PICKS (by Relative Strength) ──
+            # ── TOP PICKS (by composite quality rank) ──
             if buys:
-                top_picks = sorted(buys, key=lambda x: x.get('rs_rank', 999))[:5]
+                def _pick_score(r):
+                    """Composite rank: score + R:R + grades + RS percentile."""
+                    grade_val = {'A': 4, 'B': 3, 'C': 2, 'D': 1, 'F': 0}
+                    g_sum = (grade_val.get(r.get('trend_grade', 'F'), 0)
+                             + grade_val.get(r.get('timing_grade', 'F'), 0)
+                             + grade_val.get(r.get('risk_grade', 'F'), 0))
+                    return (r.get('score', 0) * 0.35
+                            + min(r.get('rr', 0), 5) * 6 * 0.20
+                            + g_sum * 8.33 * 0.25
+                            + r.get('rs_percentile', 0) * 0.20)
+
+                top_picks = sorted(buys, key=_pick_score, reverse=True)[:5]
                 if top_picks:
-                    H.append("<h3 style='color:#1a7a42;margin:15px 0 5px 0;'>Top Picks (by Relative Strength)</h3>")
+                    H.append("<h3 style='color:#1a7a42;margin:15px 0 5px 0;'>Top Picks (Score + R:R + Grades + RS)</h3>")
                     H.append("<table width='100%' cellpadding='4' cellspacing='0' "
                              "style='border-collapse:collapse;'>")
                     H.append(
