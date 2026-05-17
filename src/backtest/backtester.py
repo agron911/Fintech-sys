@@ -415,6 +415,139 @@ class Backtester:
 
         return result
 
+    def run_random_entry_benchmark(self, symbols: List[str],
+                                    n_iterations: int = 100,
+                                    seed: int = 42) -> Dict:
+        """Compare strategy vs random entries with the same exit logic.
+
+        Answers: does Elliott Wave detection add alpha, or is the ATR
+        trailing stop exit logic doing all the work?
+        """
+        from src.analysis.core.momentum_indicators import compute_atr
+
+        # Count actual strategy trades
+        actual_trades = sum(s.get('stats', {}).get('total_trades', 0) for s in self.results)
+        actual_sharpe = np.mean([s['stats'].get('sharpe_ratio', 0) for s in self.results
+                                 if isinstance(s.get('stats'), dict)]) if self.results else 0
+        actual_return = np.mean([s['stats'].get('total_return_pct', 0) for s in self.results
+                                  if isinstance(s.get('stats'), dict)]) if self.results else 0
+        actual_dd = np.mean([s['stats'].get('max_drawdown_pct', 0) for s in self.results
+                              if isinstance(s.get('stats'), dict)]) if self.results else 0
+        actual_wr = np.mean([s['stats'].get('win_rate', 0) for s in self.results
+                              if isinstance(s.get('stats'), dict)]) if self.results else 0
+
+        # Load data for all symbols
+        all_data = {}
+        for symbol in symbols:
+            df = self.load_from_file(symbol)
+            if df is not None and 'close' in df.columns and len(df) >= 100:
+                all_data[symbol] = df
+
+        if not all_data:
+            logger.warning("No valid data for random benchmark")
+            return {}
+
+        trades_per_symbol = max(1, actual_trades // max(1, len(all_data)))
+
+        # Run N iterations with random entries
+        iter_sharpes = []
+        iter_returns = []
+        iter_drawdowns = []
+        iter_winrates = []
+
+        for iteration in range(n_iterations):
+            rng = np.random.RandomState(seed + iteration)
+            iter_trades = 0
+            iter_profits = []
+
+            for symbol, df in all_data.items():
+                n_bars = len(df)
+                if n_bars < 50:
+                    continue
+
+                # Generate random entry dates
+                atr_series = compute_atr(df, period=14)
+                valid_start = 20
+                valid_end = n_bars - 10
+                if valid_end <= valid_start:
+                    continue
+
+                entry_indices = rng.choice(
+                    range(valid_start, valid_end),
+                    size=min(trades_per_symbol, valid_end - valid_start),
+                    replace=False
+                )
+                entry_indices.sort()
+
+                # Build signals
+                signals = []
+                for idx in entry_indices:
+                    price = float(df['close'].iloc[idx])
+                    atr_val = float(atr_series.iloc[idx]) if not np.isnan(atr_series.iloc[idx]) else price * 0.02
+                    stop = price - 2.5 * atr_val
+                    if stop >= price:
+                        stop = price * 0.95
+                    signals.append({
+                        'date': df.index[idx],
+                        'type': 'BUY',
+                        'price': price,
+                        'stop_loss': stop,
+                        'wave_number': 3,
+                        'confidence': 0.5,
+                        'targets': [],
+                    })
+
+                if not signals:
+                    continue
+
+                bt = AdvancedBacktester(
+                    initial_capital=self.config.get('initial_capital', 100000),
+                    config=self.config
+                )
+                stats = bt.simulate(df, signals)
+                if isinstance(stats, dict):
+                    iter_profits.append(stats.get('total_return_pct', 0))
+                    iter_trades += stats.get('total_trades', 0)
+                    if stats.get('win_rate') is not None:
+                        iter_winrates.append(stats['win_rate'])
+
+            avg_return = np.mean(iter_profits) if iter_profits else 0
+            iter_returns.append(avg_return)
+
+        random_mean_return = np.mean(iter_returns) if iter_returns else 0
+        random_std_return = np.std(iter_returns) if iter_returns else 0
+
+        result = {
+            'actual_trades': actual_trades,
+            'actual_return': actual_return,
+            'actual_sharpe': actual_sharpe,
+            'actual_drawdown': actual_dd,
+            'actual_winrate': actual_wr,
+            'random_mean_return': random_mean_return,
+            'random_std_return': random_std_return,
+            'n_iterations': n_iterations,
+            'alpha': actual_return - random_mean_return,
+        }
+
+        # Print report
+        print()
+        print(f"{'=' * 60}")
+        print(f"  RANDOM ENTRY BENCHMARK ({n_iterations} iterations)")
+        print(f"{'=' * 60}")
+        print(f"  {'':20s} {'Actual':>12s}  {'Random (mean ± std)':>20s}")
+        print(f"  {'Return:':20s} {actual_return:>+11.1f}%  {random_mean_return:>+8.1f}% ± {random_std_return:.1f}%")
+        print(f"  {'Win Rate:':20s} {actual_wr * 100:>11.1f}%")
+        print(f"  {'Trades:':20s} {actual_trades:>12d}")
+        print()
+        alpha = actual_return - random_mean_return
+        if alpha > 0:
+            print(f"  VERDICT: Strategy adds {alpha:+.1f}% return above random entries")
+        else:
+            print(f"  VERDICT: Strategy does NOT beat random entries ({alpha:+.1f}%)")
+        print(f"{'=' * 60}")
+
+        return result
+
     def save_results(self) -> Optional[str]:
         """Persist backtest results to a timestamped JSON file in data/backtest_results/."""
         if not self.results:

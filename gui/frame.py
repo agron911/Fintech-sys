@@ -1103,6 +1103,45 @@ class MyFrame(wx.Frame):
                 f"</td></tr></table>"
             )
 
+            # ── SIGNAL CHANGES SINCE LAST SCAN ──
+            signal_changes = scan_results.get('signal_changes', [])
+            if signal_changes:
+                change_colors = {
+                    'upgrade': ('#1a7a42', '#d5f5e3', 'UPGRADE'),
+                    'downgrade': ('#e67e22', '#fef5e7', 'DOWNGRADE'),
+                    'exit_alert': ('#c0392b', '#fdedec', 'EXIT ALERT'),
+                    'change': ('#666', '#f0f0f0', 'CHANGED'),
+                }
+                H.append("<table bgcolor='#fffde7' width='100%' cellpadding='6' "
+                         "style='border:2px solid #f9a825;border-radius:6px;margin:8px 0;'>")
+                H.append("<tr><td colspan='5'><b>Signal Changes Since Last Scan</b></td></tr>")
+                H.append("<tr bgcolor='#f9a825'>"
+                         "<th><font color='#fff'>Symbol</font></th>"
+                         "<th><font color='#fff'>Previous</font></th>"
+                         "<th><font color='#fff'>Current</font></th>"
+                         "<th><font color='#fff'>Change</font></th>"
+                         "<th align='right'><font color='#fff'>Price</font></th>"
+                         "</tr>")
+                priority = {'exit_alert': 0, 'downgrade': 1, 'upgrade': 2, 'change': 3}
+                signal_changes.sort(key=lambda x: priority.get(x.get('category', 'change'), 9))
+                for sc in signal_changes[:20]:
+                    cat = sc.get('category', 'change')
+                    color, bg, label = change_colors.get(cat, ('#666', '#f0f0f0', 'CHANGED'))
+                    sym = sc.get('symbol', '')
+                    cur = _currency(sym)
+                    H.append(
+                        f"<tr bgcolor='{bg}'>"
+                        f"<td><b>{sym}</b></td>"
+                        f"<td>{sc.get('old', '-')}</td>"
+                        f"<td><b>{sc.get('new', '-')}</b></td>"
+                        f"<td><font color='{color}'><b>{label}</b></font></td>"
+                        f"<td align='right'>{cur}{sc.get('price', 0):.2f}</td>"
+                        f"</tr>"
+                    )
+                if len(signal_changes) > 20:
+                    H.append(f"<tr><td colspan='5'>... and {len(signal_changes) - 20} more</td></tr>")
+                H.append("</table>")
+
             # ── CORE INDEX SUMMARY ──
             us_count = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'US')
             tw_count = sum(1 for r in results if MyFrame._classify_market(r.get('symbol', '')) == 'TW')

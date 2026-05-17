@@ -700,6 +700,97 @@ class TestGapDownStop:
                     f"Gap-down exit should be at open price 75, got {gap_trades[0]['exit_price']}"
 
 
+# ===================================================================
+# TEST: Sector Concentration
+# ===================================================================
+
+class TestSectorConcentration:
+    def test_limits_buys_per_sector(self):
+        """3 Tech BUYs with max_per_sector=2 should downgrade lowest-score one."""
+        from src.analysis.core.signal_scoring import apply_sector_concentration
+        results = [
+            {'symbol': 'AAPL', 'action': 'BUY', 'score': 80, 'reason': 'good'},
+            {'symbol': 'MSFT', 'action': 'BUY', 'score': 75, 'reason': 'good'},
+            {'symbol': 'GOOG', 'action': 'BUY', 'score': 70, 'reason': 'good'},
+            {'symbol': 'JPM',  'action': 'BUY', 'score': 65, 'reason': 'good'},
+        ]
+        apply_sector_concentration(results, max_per_sector=2)
+        tech_buys = [r for r in results if r['symbol'] in ('AAPL', 'MSFT', 'GOOG')
+                     and r['action'] == 'BUY']
+        assert len(tech_buys) <= 2
+        goog = [r for r in results if r['symbol'] == 'GOOG'][0]
+        assert goog['action'] == 'WATCH'
+        assert 'Sector limit' in goog['reason']
+        jpm = [r for r in results if r['symbol'] == 'JPM'][0]
+        assert jpm['action'] == 'BUY'
+
+    def test_no_change_under_limit(self):
+        """2 Tech BUYs with max=2 should remain unchanged."""
+        from src.analysis.core.signal_scoring import apply_sector_concentration
+        results = [
+            {'symbol': 'AAPL', 'action': 'BUY', 'score': 80, 'reason': 'good'},
+            {'symbol': 'MSFT', 'action': 'BUY', 'score': 75, 'reason': 'good'},
+        ]
+        apply_sector_concentration(results, max_per_sector=2)
+        assert all(r['action'] == 'BUY' for r in results)
+
+    def test_watch_stocks_unaffected(self):
+        """Non-BUY stocks should not count toward sector limit."""
+        from src.analysis.core.signal_scoring import apply_sector_concentration
+        results = [
+            {'symbol': 'AAPL', 'action': 'BUY', 'score': 80, 'reason': 'good'},
+            {'symbol': 'MSFT', 'action': 'WATCH', 'score': 50, 'reason': 'wait'},
+            {'symbol': 'GOOG', 'action': 'EXIT', 'score': 10, 'reason': 'exit'},
+        ]
+        apply_sector_concentration(results, max_per_sector=1)
+        assert results[0]['action'] == 'BUY'
+        assert results[1]['action'] == 'WATCH'
+        assert results[2]['action'] == 'EXIT'
+
+
+# ===================================================================
+# TEST: Random Entry Benchmark
+# ===================================================================
+
+class TestRandomEntryBenchmark:
+    def test_benchmark_runs_without_error(self):
+        """Random benchmark should complete without crashing on synthetic data."""
+        from src.backtest.backtester import Backtester
+        import tempfile, os
+        df = make_impulse_df(n=600)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, 'TEST.txt')
+            save_df = df.copy()
+            save_df.index = save_df.index.strftime('%Y/%m/%d')
+            save_df.insert(0, 'Date', save_df.index)
+            save_df['Date_end'] = save_df['Date']
+            save_df.columns = list(save_df.columns[:-1]) + ['Date']
+            save_df.to_csv(filepath, sep='\t', index=False)
+
+            config = {
+                'stk2_dir': tmpdir, 'processed_dir': tmpdir,
+                'backtest_window_size': 300, 'backtest_step_size': 60,
+                'initial_capital': 100000,
+            }
+            bt = Backtester(config)
+            bt.run(['TEST'])
+            result = bt.run_random_entry_benchmark(['TEST'], n_iterations=5)
+            assert isinstance(result, dict)
+
+    def test_empty_results_handled(self):
+        """Benchmark with no data should return empty dict."""
+        from src.backtest.backtester import Backtester
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'stk2_dir': tmpdir, 'processed_dir': tmpdir,
+                'initial_capital': 100000,
+            }
+            bt = Backtester(config)
+            result = bt.run_random_entry_benchmark(['FAKE'], n_iterations=3)
+            assert isinstance(result, dict)
+
+
 class TestRequirements:
     def test_no_sklearn_dependency(self):
         """requirements.txt should not include scikit-learn."""

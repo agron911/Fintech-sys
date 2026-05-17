@@ -13,13 +13,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout code (main branch)
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      - name: Restore previous data from data-updates branch
+        run: |
+          git fetch origin data-updates --depth=1 2>/dev/null || true
+          if git rev-parse --verify origin/data-updates >/dev/null 2>&1; then
+            echo "Restoring data/raw/ from data-updates branch..."
+            git checkout origin/data-updates -- data/raw/ 2>/dev/null || true
+            FILE_COUNT=$(find data/raw -name '*.txt' 2>/dev/null | wc -l)
+            echo "Restored ${FILE_COUNT} existing data files"
+          else
+            echo "No data-updates branch found, starting fresh"
+            mkdir -p data/raw
+          fi
+
       - name: Set up Python 3.10
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -28,28 +41,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ensure data directory exists
-        run: mkdir -p data/raw
-
       - name: Run fetch script
         run: |
-          # Incremental update: only fetches data for files older than 7 days
-          # Existing recent data is preserved, avoiding full re-download
           PYTHONPATH=$GITHUB_WORKSPACE \
-            python scripts/run_fetch_data.py
+            python scripts/run_fetch_data.py --all
+
+      - name: Verify fetch produced data
+        run: |
+          FILE_COUNT=$(find data/raw -name '*.txt' | wc -l)
+          echo "Total data files after fetch: ${FILE_COUNT}"
+          if [ "$FILE_COUNT" -lt 10 ]; then
+            echo "ERROR: Too few data files (${FILE_COUNT}). Fetch may have failed."
+            exit 1
+          fi
 
       - name: Commit and push data updates to data-updates branch
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git fetch origin data-updates 2>/dev/null || true
+
+          # Create an orphan commit on data-updates with the current data
+          git fetch origin data-updates --depth=1 2>/dev/null || true
           git checkout data-updates 2>/dev/null || git checkout -b data-updates
+
           git add -f data/raw/
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "Update stock data $(date +%Y-%m-%d)"
-            git push --force origin data-updates
+            git push origin data-updates
           fi
 
       - name: Package and upload data as GitHub Release
@@ -58,7 +78,6 @@ jobs:
         run: |
           DATE=$(date +%Y-%m-%d)
 
-          # Package raw data into a tarball
           tar -czf stock-data.tar.gz data/raw/
 
           SIZE=$(du -h stock-data.tar.gz | cut -f1)

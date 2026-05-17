@@ -35,6 +35,14 @@ def main():
         '--rs-benchmark', action='store_true',
         help='Run quarterly RS rotation benchmark for comparison'
     )
+    parser.add_argument(
+        '--random-benchmark', action='store_true',
+        help='Run random entry benchmark to test if wave detection adds alpha'
+    )
+    parser.add_argument(
+        '--random-iterations', type=int, default=100,
+        help='Number of random benchmark iterations (default: 100)'
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -60,6 +68,11 @@ def main():
 
     if args.rs_benchmark:
         backtester.run_rs_rotation_benchmark(symbols)
+
+    if args.random_benchmark:
+        backtester.run_random_entry_benchmark(
+            symbols, n_iterations=args.random_iterations
+        )
 
 
 if __name__ == "__main__":

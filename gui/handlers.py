@@ -24,7 +24,7 @@ from src.analysis.core.signal_scoring import (
     analyze_stock, classify_action, apply_market_regime,
     apply_relative_strength, apply_rs_guard,
     apply_rs_score_adjustment, reclassify_borderline,
-    grade_conviction,
+    grade_conviction, apply_sector_concentration,
 )
 from src.analysis.market_structure import analyze_market_structure, format_market_structure
 
@@ -488,6 +488,7 @@ def handle_scan_all_stocks(self, event):
         apply_rs_score_adjustment(results)
         reclassify_borderline(results)
         market_regime, regime_msg, exit_pct = apply_market_regime(results)
+        apply_sector_concentration(results, max_per_sector=2)
         market_structure = analyze_market_structure(results)
 
         # Sort by score
@@ -496,6 +497,26 @@ def handle_scan_all_stocks(self, event):
         # Store scan timestamp
         scan_time = datetime.now()
         self._last_scan_time = scan_time
+
+        # Detect signal changes vs previous scan
+        signal_changes = []
+        try:
+            if hasattr(self, 'scan_cache'):
+                prev_cache = self.scan_cache.load_scan_results()
+                if prev_cache and prev_cache.get('stocks'):
+                    prev_actions = {s['symbol']: s.get('action', '') for s in prev_cache['stocks']}
+                    for r in results:
+                        sym = r['symbol']
+                        new_action = r.get('action', '')
+                        old_action = prev_actions.get(sym, '')
+                        if old_action and old_action != new_action:
+                            signal_changes.append({
+                                'symbol': sym, 'old': old_action, 'new': new_action,
+                                'category': _classify_signal_change(old_action, new_action),
+                                'price': r.get('price', 0),
+                            })
+        except Exception:
+            pass
 
         # Save to cache
         try:
@@ -596,6 +617,7 @@ def handle_scan_all_stocks(self, event):
             'scan_time': scan_time.strftime('%Y-%m-%d %H:%M'),
             'chart_type': self.chart_type,
             'timeframe': candlestick_type,
+            'signal_changes': signal_changes,
         }
         wx.CallAfter(self.update_dashboard, scan_results_dict)
         wx.CallAfter(self.notebook.SetSelection, 0)  # Dashboard
@@ -1248,6 +1270,19 @@ def _plot_line_elliott_wave_enhanced(self, df: pd.DataFrame, wave_data: Dict[str
 def validate_symbol_selection(symbol: str) -> bool:
     """Validate that a proper symbol is selected."""
     return symbol and symbol != "Select Stock" and symbol.strip() != ""
+
+
+def _classify_signal_change(old: str, new: str) -> str:
+    """Classify a signal change into upgrade/downgrade/exit_alert."""
+    buy_actions = {'STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'}
+    exit_actions = {'EXIT', 'AVOID'}
+    if new in exit_actions:
+        return 'exit_alert'
+    if new in buy_actions and old not in buy_actions:
+        return 'upgrade'
+    if old in buy_actions and new not in buy_actions:
+        return 'downgrade'
+    return 'change'
 
 
 

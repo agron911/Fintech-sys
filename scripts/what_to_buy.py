@@ -43,6 +43,7 @@ from src.analysis.core.signal_scoring import (
     reclassify_borderline,
     grade_conviction,
     _classify_market,
+    apply_sector_concentration,
     SCORING_CONFIG,
 )
 from src.analysis.market_structure import analyze_market_structure, format_market_structure, compute_sector_direction_map
@@ -334,6 +335,7 @@ def main():
     apply_rs_score_adjustment(results)
     reclassify_borderline(results)
     market_regime, regime_msg, exit_pct = apply_market_regime(results)
+    apply_sector_concentration(results, max_per_sector=2)
 
     # --- Sector filter ---
     if args.sector:
@@ -395,6 +397,35 @@ def main():
     print("  Market regime: {}{}{}  ({})".format(
         regime_colors.get(market_regime, ''), market_regime, '\033[0m', regime_msg))
     print("=" * 90)
+
+    # Signal changes vs previous scan
+    try:
+        from src.utils.scan_cache import ScanCache
+        _cache = ScanCache()
+        _prev = _cache.load_scan_results()
+        if _prev and _prev.get('stocks'):
+            prev_actions = {s['symbol']: s.get('action', '') for s in _prev['stocks']}
+            changes = [(r['symbol'], prev_actions.get(r['symbol'], ''), r.get('action', ''), r.get('price', 0))
+                       for r in results
+                       if prev_actions.get(r['symbol'], '') and prev_actions.get(r['symbol'], '') != r.get('action', '')]
+            if changes:
+                print(f"\n  \033[1;33m>>> SIGNAL CHANGES SINCE LAST SCAN ({len(changes)}) <<<\033[0m")
+                for sym, old, new, price in changes[:15]:
+                    if new in ('EXIT', 'AVOID'):
+                        c, label = '\033[31m', 'EXIT ALERT'
+                    elif new in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION') and old not in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'):
+                        c, label = '\033[32m', 'UPGRADE'
+                    elif old in ('STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'):
+                        c, label = '\033[33m', 'DOWNGRADE'
+                    else:
+                        c, label = '\033[36m', 'CHANGED'
+                    cur = 'NT$' if _classify_market(sym) == 'TW' else '$'
+                    print(f"    {c}{label:<11s}\033[0m {sym:<8s}  {old} -> {new}  {cur}{price:.2f}")
+                if len(changes) > 15:
+                    print(f"    ... and {len(changes) - 15} more")
+                print()
+    except Exception:
+        pass
 
     # Action summary
     action_parts = []

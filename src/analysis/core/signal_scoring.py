@@ -781,3 +781,27 @@ def reclassify_borderline(results: list[dict]) -> None:
         elif action in ('BUY', 'BUY DIP') and score < cfg['watch_score']:
             r['action'] = 'WATCH'
             r['reason'] = f"Score {score}/100 (RS-penalized): {r.get('reason', '')}"
+
+
+def apply_sector_concentration(results: list[dict], max_per_sector: int = 2) -> None:
+    """Limit BUY recommendations to max_per_sector per sector.
+
+    Within each sector, stocks ranked by score. Excess stocks downgraded to WATCH.
+    Mutates results in place.
+    """
+    from src.analysis.market_structure import SECTOR_MAP
+
+    buy_actions = {'STRONG BUY', 'BUY', 'BUY DIP', 'BUY CORRECTION'}
+    sector_buys: dict[str, list[dict]] = {}
+    for r in results:
+        if r.get('action', '') in buy_actions:
+            sector = SECTOR_MAP.get(r.get('symbol', ''), 'Other')
+            sector_buys.setdefault(sector, []).append(r)
+
+    for sector, buys in sector_buys.items():
+        if len(buys) <= max_per_sector:
+            continue
+        buys.sort(key=lambda x: x.get('score', 0), reverse=True)
+        for r in buys[max_per_sector:]:
+            r['action'] = 'WATCH'
+            r['reason'] = f'Sector limit ({max_per_sector} {sector} already BUY) — {r.get("reason", "")}'
