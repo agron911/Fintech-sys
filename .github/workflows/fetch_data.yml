@@ -8,38 +8,52 @@ on:
     - cron: '0 0 * * 5,6'   # every Friday and Saturday at 00:00 UTC
   workflow_dispatch:         # allow manual trigger
 
+# The release tag and asset are shared mutable resources. Queue runs so a
+# scheduled run and a manual retry cannot replace them at the same time.
+concurrency:
+  group: weekly-data-fetch
+  cancel-in-progress: false
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
       - name: Checkout code (main branch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
-      - name: Restore previous data from data-updates branch
+      - name: Restore previous data from latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch origin data-updates --depth=1 2>/dev/null || true
-          if git rev-parse --verify origin/data-updates >/dev/null 2>&1; then
-            echo "Restoring data/raw/ from data-updates branch..."
-            git checkout origin/data-updates -- data/raw/ 2>/dev/null || true
-            FILE_COUNT=$(find data/raw -name '*.txt' 2>/dev/null | wc -l)
+          set -euo pipefail
+          ARCHIVE="${RUNNER_TEMP}/stock-data.tar.gz"
+          mkdir -p data/raw
+
+          if gh release view data-latest >/dev/null 2>&1; then
+            echo "Restoring data/raw/ from the data-latest release..."
+            gh release download data-latest \
+              --pattern stock-data.tar.gz \
+              --output "${ARCHIVE}"
+            tar -xzf "${ARCHIVE}"
+            FILE_COUNT=$(find data/raw -type f -name '*.txt' | wc -l)
             echo "Restored ${FILE_COUNT} existing data files"
           else
-            echo "No data-updates branch found, starting fresh"
-            mkdir -p data/raw
+            echo "No data-latest release found; starting with an empty data directory"
           fi
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Run fetch script
         run: |
@@ -48,53 +62,57 @@ jobs:
 
       - name: Verify fetch produced data
         run: |
-          FILE_COUNT=$(find data/raw -name '*.txt' | wc -l)
+          set -euo pipefail
+          FILE_COUNT=$(find data/raw -type f -name '*.txt' | wc -l)
           echo "Total data files after fetch: ${FILE_COUNT}"
           if [ "$FILE_COUNT" -lt 10 ]; then
             echo "ERROR: Too few data files (${FILE_COUNT}). Fetch may have failed."
             exit 1
           fi
 
-      - name: Commit and push data updates to data-updates branch
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-          # Create an orphan commit on data-updates with the current data
-          git fetch origin data-updates --depth=1 2>/dev/null || true
-          git checkout data-updates 2>/dev/null || git checkout -b data-updates
-
-          git add -f data/raw/
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update stock data $(date +%Y-%m-%d)"
-            git push origin data-updates
-          fi
-
-      - name: Package and upload data as GitHub Release
+      - name: Package and publish latest data release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           DATE=$(date +%Y-%m-%d)
+          ARCHIVE="${RUNNER_TEMP}/stock-data.tar.gz"
 
-          tar -czf stock-data.tar.gz data/raw/
+          tar -czf "${ARCHIVE}" data/raw/
 
-          SIZE=$(du -h stock-data.tar.gz | cut -f1)
-          FILE_COUNT=$(find data/raw -name '*.txt' | wc -l)
+          SIZE=$(du -h "${ARCHIVE}" | cut -f1)
+          FILE_COUNT=$(find data/raw -type f -name '*.txt' | wc -l)
           echo "Packaged ${FILE_COUNT} files (${SIZE})"
 
-          # Delete the old "data-latest" release if it exists
-          gh release delete data-latest --yes 2>/dev/null || true
-          git push origin :refs/tags/data-latest 2>/dev/null || true
-
-          # Create a new release with the tarball
-          gh release create data-latest stock-data.tar.gz \
-            --title "Stock Data (${DATE})" \
-            --notes "Auto-updated stock price data.
+          NOTES="Auto-updated stock price data.
           - Date: ${DATE}
           - Files: ${FILE_COUNT} stocks
           - Size: ${SIZE}
 
-          Download: \`python scripts/download_data.py\`" \
-            --latest
+          Download: \`python3 scripts/download_data.py --force\`"
+
+          # Keep the release/tag in place and replace only the asset. This
+          # avoids a window where remote clients see no data-latest release.
+          for ATTEMPT in 1 2 3; do
+            if gh release view data-latest >/dev/null 2>&1; then
+              if gh release upload data-latest "${ARCHIVE}" --clobber && \
+                 gh release edit data-latest \
+                   --title "Stock Data (${DATE})" \
+                   --notes "${NOTES}" \
+                   --latest; then
+                exit 0
+              fi
+            elif gh release create data-latest "${ARCHIVE}" \
+              --target "${GITHUB_SHA}" \
+              --title "Stock Data (${DATE})" \
+              --notes "${NOTES}" \
+              --latest; then
+              exit 0
+            fi
+
+            echo "::warning::Release publish attempt ${ATTEMPT} failed"
+            sleep $((ATTEMPT * 15))
+          done
+
+          echo "::error::Unable to publish data-latest after 3 attempts"
+          exit 1
