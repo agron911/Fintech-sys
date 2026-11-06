@@ -104,7 +104,7 @@ class MyFrame(wx.Frame):
         )
         self.SetMinSize((900, 600))
 
-        self.root = os.getcwd()
+        self.root = str(Path(__file__).resolve().parent.parent)
         self.logger = setup_logging()
         self.config = load_config()
         self.crawler = YahooFinanceCrawler(self.config)

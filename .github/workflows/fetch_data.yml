@@ -4,6 +4,14 @@ permissions:
   contents: write
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fetch_data.yml'
+      - 'scripts/run_fetch_data.py'
+      - 'scripts/verify_release_data.py'
+      - 'src/crawler/**'
+      - 'src/utils/config.py'
   schedule:
     - cron: '0 0 * * 5,6'   # every Friday and Saturday at 00:00 UTC
   workflow_dispatch:         # allow manual trigger
@@ -39,7 +47,7 @@ jobs:
               --pattern stock-data.tar.gz \
               --output "${ARCHIVE}"
             tar -xzf "${ARCHIVE}"
-            FILE_COUNT=$(find data/raw -type f -name '*.txt' | wc -l)
+            FILE_COUNT=$(find data/raw -maxdepth 1 -type f -name '*.txt' | wc -l)
             echo "Restored ${FILE_COUNT} existing data files"
           else
             echo "No data-latest release found; starting with an empty data directory"
@@ -61,14 +69,7 @@ jobs:
             python scripts/run_fetch_data.py --all
 
       - name: Verify fetch produced data
-        run: |
-          set -euo pipefail
-          FILE_COUNT=$(find data/raw -type f -name '*.txt' | wc -l)
-          echo "Total data files after fetch: ${FILE_COUNT}"
-          if [ "$FILE_COUNT" -lt 10 ]; then
-            echo "ERROR: Too few data files (${FILE_COUNT}). Fetch may have failed."
-            exit 1
-          fi
+        run: python scripts/verify_release_data.py
 
       - name: Package and publish latest data release
         env:
@@ -78,18 +79,18 @@ jobs:
           DATE=$(date +%Y-%m-%d)
           ARCHIVE="${RUNNER_TEMP}/stock-data.tar.gz"
 
-          tar -czf "${ARCHIVE}" data/raw/
+          tar -czf "${ARCHIVE}" --exclude='data/raw/archive_temp' data/raw/
 
           SIZE=$(du -h "${ARCHIVE}" | cut -f1)
-          FILE_COUNT=$(find data/raw -type f -name '*.txt' | wc -l)
+          FILE_COUNT=$(find data/raw -maxdepth 1 -type f -name '*.txt' | wc -l)
           echo "Packaged ${FILE_COUNT} files (${SIZE})"
 
           NOTES="Auto-updated stock price data.
           - Date: ${DATE}
-          - Files: ${FILE_COUNT} stocks
+          - Files: ${FILE_COUNT} active stock files
           - Size: ${SIZE}
 
-          Download: \`python3 scripts/download_data.py --force\`"
+          Download: \`python3 main.py update-data --force\`"
 
           # Keep the release/tag in place and replace only the asset. This
           # avoids a window where remote clients see no data-latest release.

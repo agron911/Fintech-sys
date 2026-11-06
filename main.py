@@ -20,6 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
 COMMANDS = {
     "scan":     ("what_to_buy.py",      "Scan stocks for buy candidates"),
     "fetch":    ("run_fetch_data.py",   "Fetch / update stock data from Yahoo Finance"),
+    "update-data": ("download_data.py", "Download the latest published stock data"),
     "backtest": ("run_backtest.py",     "Run backtest on strategies"),
     "validate": ("validate_data.py",    "Validate downloaded data files"),
     "gui":      ("run_gui.py",          "Launch the graphical interface"),

@@ -74,15 +74,19 @@ def load_config():
 
     _validate_config(config, config_path)
 
-    # Ensure all configured directories exist (prevents errors on fresh clones)
+    # Resolve paths from the repo, matching the release downloader even when
+    # the app is launched by a shortcut or from a different working directory.
     project_root = config_path.parent.parent
     _dir_keys = ['data_dir', 'stk2_dir', 'adjustments_dir', 'processed_dir', 'databases_dir']
-    for key in _dir_keys:
+    _file_keys = ['international_file', 'list_file', 'otclist_file']
+    for key in _dir_keys + _file_keys:
         if key in config:
-            dir_path = Path(config[key])
-            if not dir_path.is_absolute():
-                dir_path = project_root / dir_path
-            dir_path.mkdir(parents=True, exist_ok=True)
-            logger.debug('Ensured directory exists: %s', dir_path)
+            path = Path(config[key]).expanduser()
+            if not path.is_absolute():
+                path = project_root / path
+            config[key] = str(path.resolve())
+            if key in _dir_keys:
+                path.mkdir(parents=True, exist_ok=True)
+                logger.debug('Ensured directory exists: %s', path)
 
     return config

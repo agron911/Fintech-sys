@@ -90,7 +90,9 @@ def main():
     release = get_release_info()
 
     print(f"Release: {release['name']}")
-    print(f"Updated: {release['published_at'][:10]}")
+    asset = next((item for item in release.get("assets", [])
+                  if item["name"] == ASSET_NAME), {})
+    print(f"Updated: {asset.get('updated_at') or release['published_at']}")
     print(f"Notes:   {release.get('body', '').split(chr(10))[0]}")
 
     if args.info:

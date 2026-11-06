@@ -23,7 +23,7 @@ This project is a stock price tracing and analysis system that fetches, processe
 
 - Run the main GUI:
   ```
-  python main.py
+   python main.py gui
   ```
 - **Run the modular crawler:**
   ```
@@ -34,26 +34,46 @@ This project is a stock price tracing and analysis system that fetches, processe
 
 ## Data Updates
 
-Stock data is automatically updated weekly via CI and pushed to the `data-updates` branch.
+Stock snapshots are published to the **`data-latest` GitHub Release** every
+Friday and Saturday at 00:00 UTC, after changes to the fetch workflow or crawler,
+and through a manual workflow run. The `data-updates` branch is historical.
+
+### Edge PCs
+
+Run these commands from the repository folder to update the app and its data:
+
+```bash
+git switch main
+git pull --ff-only origin main
+python main.py update-data --force
+```
+
+For subsequent data updates, run just:
+
+```bash
+python main.py update-data --force
+```
+
+The download extracts the current release into this repo's `data/raw/`.
+`--force` skips the confirmation prompt. Git pull updates application code;
+the data command downloads the release asset without using Git LFS.
 
 ### Update Strategy
-The CI uses an **incremental update** approach:
-- Only fetches data for files older than 7 days
-- Preserves existing data files if recently updated
-- Skips unchanged stocks to save time and bandwidth
-- ~75-85% faster than full re-download
 
-### For Developers
-- Push code changes to `main` without data conflicts
-- To get latest data: Merge the `data-updates` branch into your local `main`:
-  ```
-  git checkout main
-  git merge origin/data-updates
-  ```
-  Or checkout the `data-updates` branch directly:
-  ```
-  git checkout data-updates
-  ```
+CI restores the previous snapshot and refreshes stocks whose price data is old.
+Before publishing, it checks for at least 10 fresh files and requires 90% of
+active files to contain prices from the last 7 days. Historical `archive_temp/`
+copies are excluded from the archive and stock count.
+
+To check release metadata or local freshness:
+
+```bash
+python main.py update-data --info
+python scripts/verify_release_data.py
+```
+
+The metadata's update time refers to the asset's replacement time. Individual
+stocks can still have older prices if their fetch fails or trading is suspended.
 
 ## Crawler System
 
@@ -163,4 +183,4 @@ investment_system/
   - **crawler/**: Data collection modules for different sources
   - **utils/**: Shared utility functions and helpers
 - **gui/**: Complete GUI implementation using wxPython
-- **tests/**: Unit and integration tests for system components 
+- **tests/**: Unit and integration tests for system components
