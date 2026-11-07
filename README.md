@@ -75,6 +75,27 @@ python scripts/verify_release_data.py
 The metadata's update time refers to the asset's replacement time. Individual
 stocks can still have older prices if their fetch fails or trading is suspended.
 
+### HTTPS Certificate Errors on an Edge PC
+
+If Python reports `CERTIFICATE_VERIFY_FAILED` or `unable to get local issuer
+certificate`, update its certificate support and retry:
+
+```bash
+python -m pip install --upgrade certifi truststore
+python main.py update-data --force
+```
+
+The downloader uses the operating system's certificate store when `truststore`
+is installed, and adds public CA certificates from `certifi`. It also honors
+`SSL_CERT_FILE` and `SSL_CERT_DIR`.
+
+For a company network with its own HTTPS certificate issuer, use its approved
+CA bundle or install that CA in the operating system's certificate store:
+
+```bash
+python main.py update-data --force --ca-bundle /path/to/company-ca.pem
+```
+
 ## Crawler System
 
 The crawler is now modular and extensible:
