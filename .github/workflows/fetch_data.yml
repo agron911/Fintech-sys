@@ -10,6 +10,8 @@ on:
       - '.github/workflows/fetch_data.yml'
       - 'scripts/run_fetch_data.py'
       - 'scripts/verify_release_data.py'
+      - 'scripts/build_data_release.py'
+      - 'scripts/data_snapshots.py'
       - 'src/crawler/**'
       - 'src/utils/config.py'
   schedule:
@@ -31,7 +33,25 @@ jobs:
       - name: Checkout code (main branch)
         uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          fetch-depth: 2
+
+      - name: Detect crawler changes
+        id: changes
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "${BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+            echo "crawler=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${BEFORE_SHA}"
+          fi
+          if [ -n "$(git diff --name-only "${BEFORE_SHA}" HEAD -- scripts/run_fetch_data.py src/crawler src/utils/config.py)" ]; then
+            echo "crawler=true" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Restore previous data from latest release
         env:
@@ -49,9 +69,16 @@ jobs:
             tar -xzf "${ARCHIVE}"
             FILE_COUNT=$(find data/raw -maxdepth 1 -type f -name '*.txt' | wc -l)
             echo "Restored ${FILE_COUNT} existing data files"
+            if gh release view data-latest --json assets --jq '.assets[].name' | \
+                grep -Fxq stock-data-manifest.json.gz; then
+              gh release download data-latest \
+                --pattern stock-data-manifest.json.gz \
+                --output "${RUNNER_TEMP}/previous-manifest.json.gz"
+            fi
           else
             echo "No data-latest release found; starting with an empty data directory"
           fi
+          cp -a data/raw "${RUNNER_TEMP}/data-before"
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v6
@@ -59,11 +86,13 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
+        if: github.event_name != 'push' || steps.changes.outputs.crawler == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
       - name: Run fetch script
+        if: github.event_name != 'push' || steps.changes.outputs.crawler == 'true'
         run: |
           PYTHONPATH=$GITHUB_WORKSPACE \
             python scripts/run_fetch_data.py --all
@@ -71,15 +100,22 @@ jobs:
       - name: Verify fetch produced data
         run: python scripts/verify_release_data.py
 
+      - name: Build full snapshot and incremental assets
+        run: |
+          python scripts/build_data_release.py \
+            --previous "${RUNNER_TEMP}/data-before" \
+            --previous-manifest "${RUNNER_TEMP}/previous-manifest.json.gz" \
+            --output "${RUNNER_TEMP}/data-release"
+
       - name: Package and publish latest data release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           DATE=$(date +%Y-%m-%d)
-          ARCHIVE="${RUNNER_TEMP}/stock-data.tar.gz"
-
-          tar -czf "${ARCHIVE}" --exclude='data/raw/archive_temp' data/raw/
+          PACKAGE_DIR="${RUNNER_TEMP}/data-release"
+          ARCHIVE="${PACKAGE_DIR}/stock-data.tar.gz"
+          MANIFEST="${PACKAGE_DIR}/stock-data-manifest.json.gz"
 
           SIZE=$(du -h "${ARCHIVE}" | cut -f1)
           FILE_COUNT=$(find data/raw -maxdepth 1 -type f -name '*.txt' | wc -l)
@@ -88,32 +124,64 @@ jobs:
           NOTES="Auto-updated stock price data.
           - Date: ${DATE}
           - Files: ${FILE_COUNT} active stock files
-          - Size: ${SIZE}
+          - Full snapshot: ${SIZE}
+          - Incremental updates and checksums are available in the manifest.
 
           Download: \`python3 main.py update-data --force\`"
 
           # Keep the release/tag in place and replace only the asset. This
           # avoids a window where remote clients see no data-latest release.
+          PUBLISHED=false
           for ATTEMPT in 1 2 3; do
             if gh release view data-latest >/dev/null 2>&1; then
-              if gh release upload data-latest "${ARCHIVE}" --clobber && \
+              # Delta filenames identify immutable base/target contents.
+              DELTAS_READY=true
+              for DELTA in "${PACKAGE_DIR}"/stock-data-delta-*.tar.gz; do
+                [ -f "${DELTA}" ] || continue
+                if ! gh release upload data-latest "${DELTA}" --clobber; then
+                  DELTAS_READY=false
+                  break
+                fi
+              done
+              # Announce the new snapshot only after its assets are uploaded.
+              if [ "${DELTAS_READY}" = true ] && \
+                 gh release upload data-latest "${ARCHIVE}" --clobber && \
+                 gh release upload data-latest "${MANIFEST}" --clobber && \
                  gh release edit data-latest \
                    --title "Stock Data (${DATE})" \
                    --notes "${NOTES}" \
                    --latest; then
-                exit 0
+                PUBLISHED=true
+                break
               fi
-            elif gh release create data-latest "${ARCHIVE}" \
+            elif gh release create data-latest "${ARCHIVE}" "${MANIFEST}" \
               --target "${GITHUB_SHA}" \
               --title "Stock Data (${DATE})" \
               --notes "${NOTES}" \
               --latest; then
-              exit 0
+              PUBLISHED=true
+              break
             fi
 
             echo "::warning::Release publish attempt ${ATTEMPT} failed"
             sleep $((ATTEMPT * 15))
           done
 
-          echo "::error::Unable to publish data-latest after 3 attempts"
-          exit 1
+          if [ "${PUBLISHED}" != true ]; then
+            echo "::error::Unable to publish data-latest after 3 attempts"
+            exit 1
+          fi
+
+          # Keep eight delta archives (about four weeks of scheduled updates).
+          gh release view data-latest --json assets --jq '.assets[].name' \
+            > "${RUNNER_TEMP}/release-assets.txt"
+          python - "${PACKAGE_DIR}/publish.json" "${RUNNER_TEMP}/release-assets.txt" <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          retained = set(json.loads(Path(sys.argv[1]).read_text())["retained_deltas"])
+          for name in Path(sys.argv[2]).read_text().splitlines():
+              if name.startswith("stock-data-delta-") and name not in retained:
+                  subprocess.run(["gh", "release", "delete-asset", "data-latest", name, "--yes"], check=True)
+          PY

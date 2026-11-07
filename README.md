@@ -58,12 +58,27 @@ The download extracts the current release into this repo's `data/raw/`.
 `--force` skips the confirmation prompt. Git pull updates application code;
 the data command downloads the release asset without using Git LFS.
 
+The client first downloads a small compressed checksum manifest. If local files
+already match, no stock data is downloaded. Otherwise it uses verified patches
+that reuse unchanged historical rows. CI retains eight patches, covering about
+four weeks of scheduled updates. A first install, modified local history, or a
+missing patch chain uses the full snapshot. The amount saved depends on how much
+historical data Yahoo Finance revises.
+
+Existing edge data can be adopted without another full download when its checksums
+match a published snapshot. For an explicit full repair, run:
+
+```bash
+python main.py update-data --full --force
+```
+
 ### Update Strategy
 
 CI restores the previous snapshot and refreshes stocks whose price data is old.
 Before publishing, it checks for at least 10 fresh files and requires 90% of
 active files to contain prices from the last 7 days. Historical `archive_temp/`
-copies are excluded from the archive and stock count.
+copies are excluded from the archive and stock count. Packaging-only code pushes
+reuse the previous snapshot; scheduled and manual runs fetch prices first.
 
 To check release metadata or local freshness:
 

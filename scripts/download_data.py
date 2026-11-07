@@ -5,7 +5,8 @@ Download the latest stock data from GitHub Releases.
 Usage:
     python scripts/download_data.py              # Download latest data
     python scripts/download_data.py --info       # Show release info without downloading
-    python scripts/download_data.py --force      # Re-download even if data exists
+    python scripts/download_data.py --force      # Update without prompting
+    python scripts/download_data.py --full --force  # Repair using a full snapshot
 
 The CI workflow uploads fresh stock price data every Friday/Saturday.
 This script downloads and extracts it to data/raw/.
@@ -19,6 +20,8 @@ import tempfile
 import urllib.request
 import urllib.error
 import ssl
+import gzip
+import hashlib
 from pathlib import Path
 from email.utils import parsedate_to_datetime
 
@@ -27,6 +30,8 @@ TAG = "data-latest"
 ASSET_NAME = "stock-data.tar.gz"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "raw"
+sys.path.insert(0, str(PROJECT_ROOT))
+from scripts import data_snapshots as snapshots
 
 
 class CertificateVerificationError(RuntimeError):
@@ -155,7 +160,102 @@ def download_and_extract(url, size, ssl_context=None):
     print(f"Done. {file_count} stock files in {DATA_DIR}")
 
 
+def asset_url(name):
+    return f"https://github.com/{REPO}/releases/download/{TAG}/{name}"
+
+
+def get_snapshot_manifest(ssl_context):
+    req = urllib.request.Request(asset_url(snapshots.MANIFEST_NAME),
+                                 headers={"Cache-Control": "no-cache"})
+    try:
+        with open_url(req, timeout=30, ssl_context=ssl_context) as response:
+            content = response.read(16 * 1024 * 1024 + 1)
+        if len(content) > 16 * 1024 * 1024:
+            raise snapshots.SnapshotError("Snapshot manifest is too large")
+        return snapshots.validate_manifest(json.loads(gzip.decompress(content)))
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+
+
+def download_asset(asset, destination, ssl_context):
+    """Download an asset and check its size and SHA-256 before using it."""
+    print(f"Downloading {asset['name']} ({asset['size'] / 1024 / 1024:.2f} MiB) ...")
+    req = urllib.request.Request(asset_url(asset["name"]))
+    digest = hashlib.sha256()
+    total = 0
+    with open_url(req, timeout=300, ssl_context=ssl_context) as response:
+        with Path(destination).open("wb") as stream:
+            while True:
+                block = response.read(256 * 1024)
+                if not block:
+                    break
+                stream.write(block)
+                digest.update(block)
+                total += len(block)
+                if total > asset["size"]:
+                    raise snapshots.SnapshotError("Snapshot asset exceeds its declared size")
+    if total != asset["size"] or digest.hexdigest() != asset["sha256"]:
+        raise snapshots.SnapshotError("Snapshot asset checksum mismatch")
+    return total
+
+
+def update_from_manifest(args, manifest, ssl_context):
+    print(f"Snapshot: {manifest['snapshot'][:16]}")
+    print(f"Updated: {manifest['created_at']}")
+    print(f"Stocks: {len(manifest['files'])}")
+    if args.info:
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    files = manifest["files"]
+    state = snapshots.load_state(DATA_DIR)
+    full = getattr(args, "full", False)
+    current = snapshots.inventory(DATA_DIR, files)
+    obsolete = set(state.get("files", {})) - set(files)
+    if not full and current == files:
+        for name in obsolete:
+            (DATA_DIR / snapshots.file_name(name)).unlink(missing_ok=True)
+        snapshots.save_state(DATA_DIR, files)
+        print("Already up to date; no price data downloaded.")
+        return
+    if current and not args.force:
+        answer = input("Update local prices? [y/N] ").strip().lower()
+        if answer != "y":
+            print("Skipped.")
+            return
+    known = set(manifest.get("known_files", files)) | set(state.get("files", {}))
+    local = dict(current)
+    local.update(snapshots.inventory(DATA_DIR, known - set(current)))
+    chain = None if full else snapshots.delta_path(snapshots.snapshot_id(local), manifest)
+    deltas = [manifest["deltas"][index] for index in chain] if chain is not None else []
+    use_deltas = bool(deltas) and sum(d["size"] for d in deltas) < manifest["full"]["size"]
+    transferred = 0
+    with tempfile.TemporaryDirectory(prefix="stock-download-") as temporary:
+        temporary = Path(temporary)
+        if use_deltas:
+            try:
+                for delta in deltas:
+                    path = temporary / delta["name"]
+                    transferred += download_asset(delta, path, ssl_context)
+                    count = snapshots.apply_delta(path, DATA_DIR, delta["base"], delta["target"])
+                    print(f"Updated {count} stock files from a verified patch.")
+            except (snapshots.SnapshotError, tarfile.TarError, KeyError, urllib.error.HTTPError) as error:
+                print(f"Incremental update unavailable ({error}); using the full snapshot.")
+                use_deltas = False
+        if not use_deltas:
+            path = temporary / snapshots.FULL_NAME
+            transferred += download_asset(manifest["full"], path, ssl_context)
+            snapshots.install_full(path, DATA_DIR, files)
+    snapshots.save_state(DATA_DIR, files)
+    print(f"Done. {len(files)} stock files in {DATA_DIR}; downloaded {transferred / 1024 / 1024:.2f} MiB.")
+
+
 def update_data(args, ssl_context):
+    manifest = get_snapshot_manifest(ssl_context)
+    if manifest is not None:
+        update_from_manifest(args, manifest, ssl_context)
+        return
     release = get_release_info(ssl_context)
 
     print(f"Release: {release['name']}")
@@ -184,7 +284,8 @@ def update_data(args, ssl_context):
 def main():
     parser = argparse.ArgumentParser(description="Download latest stock data from GitHub Releases")
     parser.add_argument("--info", action="store_true", help="Show release info without downloading")
-    parser.add_argument("--force", action="store_true", help="Re-download even if data exists")
+    parser.add_argument("--force", action="store_true", help="Update data without prompting")
+    parser.add_argument("--full", action="store_true", help="Download a full snapshot for repair")
     parser.add_argument("--ca-bundle", type=Path, help="Trusted CA certificates in PEM format")
     args = parser.parse_args()
     try:
@@ -194,6 +295,8 @@ def main():
         parser.exit(1, f"{error}\n")
     except FileNotFoundError as error:
         parser.exit(1, f"Cannot open file: {error}\n")
+    except snapshots.SnapshotError as error:
+        parser.exit(1, f"Data verification failed: {error}. Retry the update.\n")
 
 
 if __name__ == "__main__":

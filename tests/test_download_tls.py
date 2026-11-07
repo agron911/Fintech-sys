@@ -14,9 +14,11 @@ import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import download_data
+from scripts import data_snapshots as snapshots
 
 
 class DownloadTLSTest(unittest.TestCase):
@@ -55,6 +57,8 @@ class DownloadTLSTest(unittest.TestCase):
             tar.addfile(info, io.BytesIO(contents))
         cls.archive = archive.getvalue()
         cls.contents = contents
+        cls.assets = {}
+        cls.requests = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_HEAD(self):
@@ -64,7 +68,10 @@ class DownloadTLSTest(unittest.TestCase):
                 self.end_headers()
 
             def do_GET(self):
-                if self.path == "/asset":
+                cls.requests.append(self.path)
+                if self.path.startswith("/assets/"):
+                    body = cls.assets[self.path[len("/assets/"):]]
+                elif self.path == "/asset":
                     body = cls.archive
                 else:
                     body = json.dumps({
@@ -160,6 +167,36 @@ class DownloadTLSTest(unittest.TestCase):
     def test_missing_ca_bundle_is_reported(self):
         with self.assertRaises(FileNotFoundError):
             download_data.create_ssl_context(self.root / "missing.pem")
+
+    def test_verified_https_download_uses_patch_then_only_manifest(self):
+        previous = self.root / "previous"
+        current = self.root / "current"
+        client = self.root / "data/raw"
+        output = self.root / "release"
+        previous.mkdir()
+        rows = [f"2020/01/01\t{i}.123456\t102\t99\t101\t{i}\t2020/01/01\r\n".encode()
+                for i in range(1000)]
+        (previous / "AAPL.txt").write_bytes(b"".join(rows))
+        shutil.copytree(previous, current)
+        shutil.copytree(previous, client)
+        with (current / "AAPL.txt").open("ab") as stream:
+            stream.write(self.contents)
+        snapshots.build_release(current, output, previous=previous)
+        type(self).assets = {p.name: p.read_bytes() for p in output.iterdir()}
+        type(self).requests = []
+        args = SimpleNamespace(info=False, force=True, full=False)
+        context = download_data.create_ssl_context(self.ca)
+        with patch.object(download_data, "DATA_DIR", client), \
+                patch.object(download_data, "asset_url", side_effect=lambda name: self.url + "/assets/" + name):
+            download_data.update_data(args, context)
+            manifest = snapshots.read_json(output / snapshots.MANIFEST_NAME)
+            self.assertEqual(type(self).requests, ["/assets/" + snapshots.MANIFEST_NAME,
+                                                  "/assets/" + manifest["deltas"][0]["name"]])
+            self.assertEqual(snapshots.inventory(client), manifest["files"])
+            download_data.update_data(args, context)
+        self.assertEqual(type(self).requests[-1], "/assets/" + snapshots.MANIFEST_NAME)
+        self.assertEqual(len(type(self).requests), 3)
+        self.assertFalse((client / "archive_temp").exists())
 
     def test_api_rate_limit_falls_back_to_verified_public_asset(self):
         context = download_data.create_ssl_context(self.ca)
